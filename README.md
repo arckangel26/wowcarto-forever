@@ -35,13 +35,15 @@ possible hors ligne.
 
 ## Premiers pas
 
-1. Installez le client Windows depuis une version mise à disposition dans les
-   [releases du projet](https://github.com/arckangel26/wowcarto-forever/releases).
+1. Téléchargez et lancez l’installateur de la [préversion Windows 0.9.2](https://github.com/arckangel26/wowcarto-forever/releases/tag/v0.9.2-preview).
 2. Au premier démarrage, sélectionnez le fichier `Wow.exe` de WoW Forever.
 3. Choisissez **SD** ou **HD**, puis laissez l’application générer les cartes.
 4. Choisissez la base **française** ou **anglaise**. Les informations sont
    téléchargées et vérifiées avant l’ouverture.
 5. Explorez la carte en **consultation**.
+
+L’installateur est non signé et la préversion est accessible aux personnes ayant
+accès à ce dépôt privé. Le parcours complet de cet installateur reste à vérifier.
 
 
 
