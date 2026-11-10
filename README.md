@@ -43,9 +43,7 @@ possible hors ligne.
    téléchargées et vérifiées avant l’ouverture.
 5. Explorez la carte en **consultation**.
 
-> **Disponibilité :** le paquet Windows existe localement et son parcours a été
-> essayé sur une installation isolée. Aucune release n’a encore été publiée sur
-> ce dépôt. L’installateur n’est pas signé.
+
 
 ## État du projet
 
