@@ -1,6 +1,7 @@
 import unittest
 
 from tools.clone_model import Model, folded
+from tools.clone_regions import project_forever, reference_location_for_forever
 
 
 class GeographicRegionsTests(unittest.TestCase):
@@ -28,6 +29,18 @@ class GeographicRegionsTests(unittest.TestCase):
     def test_english_database_zone_category_is_geographic(self):
         self.model.categories[18]['name'] = 'Zone'
         self.assertEqual([r['name'] for r in self.model.geographic_regions()], ['Azshara'])
+
+    def test_forever_click_roundtrips_into_reference_tile(self):
+        tile = {'id': 42, 'group_id': 1000, 'x': -512, 'y': -256}
+        original = (-512 + 21.5, -256 + 63.25)
+        displayed = project_forever(1000, original)
+        result, x, y = reference_location_for_forever('Kalimdor', displayed, [tile])
+        self.assertEqual(result['id'], 42)
+        restored = project_forever(1000, (tile['x'] + x/256, tile['y'] + y/256))
+        self.assertLess(abs(restored[0]-displayed[0]), .02)
+        self.assertLess(abs(restored[1]-displayed[1]), .02)
+        with self.assertRaises(ValueError):
+            reference_location_for_forever('Kalimdor', displayed, [])
 
 
 if __name__ == '__main__':

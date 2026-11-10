@@ -58,15 +58,15 @@ la présence et la position de chaque annotation dans Forever ne sont pas toutes
 vérifiées. Certaines informations peuvent donc avoir changé.
 
 Le parcours d’installation décrit ci-dessus ouvre l’application en consultation.
-Les fonctions d’édition et de contribution du code existant ne constituent pas
-une promesse de service communautaire public opérationnel.
+L’édition locale peut ensuite être déverrouillée ; le service de contribution
+communautaire public reste à valider.
 
 ## Éditer la carte
 
 Vous souhaitez ajouter une annotation ou corriger une information ? Le
-[guide d’édition](docs/EDITION.md) présente les étapes et les limites actuelles.
-L’installation préparée est en consultation seule : l’édition et le partage
-n’y sont pas disponibles. En attendant, vous pouvez signaler une erreur dans une issue.
+[guide d’édition](docs/EDITION.md) présente le déblocage par code et les limites
+actuelles. Les modifications sont locales ; vous pouvez aussi signaler une erreur
+dans une issue.
 
 ## Remerciements
 

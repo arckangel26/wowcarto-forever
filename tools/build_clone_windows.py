@@ -129,7 +129,7 @@ def build(destination, *, local_data=None, iscc=None, verified_data=None, app_ic
         shutil.copyfile(app_icon, icon_copy)
         assets['build-assets/application.ico'] = icon_copy
     sources = sorted(set([*ROOT.glob('tools/**/*.py'), *ROOT.glob('tests/**/*.py'), *ROOT.glob('assets/first-run/*'), ROOT / 'tools/wowcarto_client.iss',
-                          ROOT / 'requirements-client-windows.txt', ROOT / 'docs/CLIENT_WINDOWS.md']))
+                          ROOT / 'requirements-client-windows.txt', ROOT / 'docs/CLIENT_WINDOWS.md', ROOT / 'docs/EDITION.md']))
     source_hashes = {p.relative_to(ROOT).as_posix(): sha256(p) for p in sources}
     source_zip = destination / 'sources-client.zip'
     with zipfile.ZipFile(source_zip, 'x', zipfile.ZIP_DEFLATED) as archive:
@@ -148,6 +148,7 @@ def build(destination, *, local_data=None, iscc=None, verified_data=None, app_ic
     app = destination / 'WoWCartoForever-Client'
     if local_data: shutil.copytree(local_data, app / 'data')
     shutil.copyfile(ROOT / 'docs/CLIENT_WINDOWS.md', app / 'LIRE-MOI.md')
+    shutil.copyfile(ROOT / 'docs/EDITION.md', app / 'EDITION.md')
     shutil.copyfile(source_zip, app / source_zip.name)
     if app_icon: shutil.copyfile(icon_copy, app / 'application.ico')
     manifest = dict(version=VERSION, windows_numeric_version=numeric_version,

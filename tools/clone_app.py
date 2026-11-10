@@ -24,7 +24,7 @@ from tools.clone_annotation_dialog import AnnotationDialog
 from tools.clone_i18n import translate
 from tools.clone_model import Model, folded
 from tools.clone_regions import (FOREVER_REGISTRATION, decode_region_outline, polygon_bounds,
-                                 project_forever, project_historical_records)
+                                 project_forever, project_historical_records, reference_location_for_forever)
 from tools.clone_store import Store
 from tools.clone_community import CommunityClient
 from tools.clone_reference_community import ReferenceCommunityClient, SOURCES, submit_reference
@@ -35,7 +35,7 @@ from tools.native_additions import parse_additions
 from tools.map_packs import checked_image, load_pack, local_file
 
 
-VERSION = '0.9.1'
+VERSION = '0.9.2'
 DATA_LABELS = {'Référence 1.20': '1.20 / Classic', 'Legacy': 'Legacy 1.08b (candidat)',
                'Modern': 'Forever 1.60.1.70755'}
 
@@ -65,6 +65,7 @@ class Application(ReferenceInterface):
         self.data = Path(data)
         self.preferences_path = Path(state).with_name('client-preferences.json')
         self.preferences = self.load_preferences()
+        self.forced_consultation = consultation_only
         self.consultation_only = consultation_only or self.preferences.get('consultation_only') is True
         self.store = Store(state)
         self.community = CommunityClient(Path(state).with_name('community-cache.json'))
@@ -147,6 +148,9 @@ class Application(ReferenceInterface):
         language_menu.add_radiobutton(label='Français', variable=self.ui_language, value='fr', command=self.change_ui_language)
         language_menu.add_radiobutton(label='English', variable=self.ui_language, value='en', command=self.change_ui_language)
         choices.add_checkbutton(label='Mode édition', variable=self.edit_enabled, command=self.edit_mode_changed)
+        choices.add_command(label='Enregistrer un code d’édition…', accelerator='Ctrl+Alt+A', command=self.register_edit_code)
+        choices.add_command(label='Afficher les codes d’édition…', accelerator='Ctrl+Alt+L', command=self.list_edit_codes)
+        choices.add_command(label='Effacer les codes d’édition…', accelerator='Ctrl+Alt+P', command=self.purge_edit_codes)
         edit_choices = tk.Menu(choices, tearoff=False)
         choices.add_cascade(label='Base autorisée pour l’édition', menu=edit_choices)
         for value in self.languages:
@@ -280,6 +284,9 @@ class Application(ReferenceInterface):
         tk.Label(self.root, textvariable=self.status, anchor='w', bd=1, relief='sunken').pack(fill='x', side='bottom')
         self.bind_reference_shortcuts()
         self.root.bind('<Control-n>', lambda e: self.add_at_center())
+        self.root.bind('<Control-Alt-a>', lambda e: self.register_edit_code())
+        self.root.bind('<Control-Alt-l>', lambda e: self.list_edit_codes())
+        self.root.bind('<Control-Alt-p>', lambda e: self.purge_edit_codes())
         self.root.bind('<Control-comma>', lambda e: self.show_preferences())
         self.root.bind('<F5>', lambda e: (self.show_pane('regions'), self.filter_entry.focus_set()))
         self.root.bind('<Control-s>', lambda e: self.status.set(self.tr('Annotations locales enregistrées automatiquement.')))
@@ -361,7 +368,7 @@ class Application(ReferenceInterface):
     def add_at_center(self):
         if self.consultation_blocked(): return
         tile = self.map.tile_at(self.map.cx, self.map.cy)
-        if self.mode.get() != 'Référence 1.20':
+        if self.mode.get() not in ('Référence 1.20', 'Modern'):
             self.status.set(self.tr('L’édition locale est disponible en référence 1.20.'))
         elif tile is None or not tile.get('standard'):
             self.status.set('Choisissez un point sur une carte 1.20 disponible.')
@@ -610,18 +617,78 @@ class Application(ReferenceInterface):
         self.save_preferences()
 
     def edit_mode_changed(self):
-        if self.consultation_blocked():
+        if getattr(self, 'forced_consultation', False):
+            self.consultation_blocked()
             self.edit_enabled.set(False)
             return
         if self.edit_enabled.get():
             self.edit_database.set(self.database.get())
             self.preferences['edit_database'] = self.database.get()
-        self.status.set(translate('Mode édition activé.' if self.edit_enabled.get() else 'Mode édition désactivé.', self.ui_language.get()))
+        if self.edit_enabled.get() and self.consultation_only:
+            self.status.set('Mode édition activé : Ctrl+Alt+A pour enregistrer un code d’autorisation.')
+        else:
+            self.status.set(translate('Mode édition activé.' if self.edit_enabled.get() else 'Mode édition désactivé.', self.ui_language.get()))
 
     def toggle_edit_mode(self):
-        if self.consultation_blocked(): return
         self.edit_enabled.set(not self.edit_enabled.get())
         self.edit_mode_changed()
+
+    def register_edit_code(self):
+        if getattr(self, 'forced_consultation', False):
+            self.consultation_blocked()
+            return
+        if not self.edit_enabled.get():
+            messagebox.showinfo('Autorisation d’édition', 'Activez d’abord le mode édition avec le bouton stylo.', parent=self.root)
+            return
+        code = simpledialog.askstring('Autorisation d’édition', 'Saisissez le code d’autorisation :', parent=self.root)
+        if code is None:
+            return
+        if code.strip() != '6895':
+            messagebox.showerror('Autorisation d’édition', 'Code non reconnu ; aucune autorisation ajoutée.', parent=self.root)
+            return
+        if getattr(self, 'preferences_read_error', False):
+            messagebox.showerror('Autorisation d’édition', 'Préférences illisibles ; fichier conservé.', parent=self.root)
+            return
+        before = dict(self.preferences)
+        self.preferences['edit_authorization_codes'] = ['6895']
+        self.preferences['consultation_only'] = False
+        self.save_preferences()
+        try:
+            saved = json.loads(self.preferences_path.read_text(encoding='utf-8'))
+            if saved.get('edit_authorization_codes') != ['6895'] or saved.get('consultation_only') is not False:
+                raise ValueError('Enregistrement non confirmé')
+        except (OSError, ValueError, AttributeError):
+            self.preferences = before
+            messagebox.showerror('Autorisation d’édition', 'Impossible d’enregistrer le code.', parent=self.root)
+            return
+        self.consultation_only = False
+        messagebox.showinfo('Autorisation d’édition', 'Code 6895 enregistré pour ce profil. Les modifications restent locales.', parent=self.root)
+
+    def list_edit_codes(self):
+        codes = self.preferences.get('edit_authorization_codes', [])
+        codes = codes if isinstance(codes, list) else []
+        messagebox.showinfo('Codes enregistrés', '\n'.join(str(x) for x in codes) if codes else 'Aucun code enregistré.', parent=self.root)
+
+    def purge_edit_codes(self):
+        if not messagebox.askyesno('Codes enregistrés', 'Effacer les codes et revenir en consultation seule ?', parent=self.root):
+            return
+        if getattr(self, 'preferences_read_error', False):
+            messagebox.showerror('Codes enregistrés', 'Préférences illisibles ; fichier conservé.', parent=self.root)
+            return
+        before = dict(self.preferences)
+        self.preferences['edit_authorization_codes'] = []
+        self.preferences['consultation_only'] = True
+        self.save_preferences()
+        try:
+            saved = json.loads(self.preferences_path.read_text(encoding='utf-8'))
+            if saved.get('edit_authorization_codes') != [] or saved.get('consultation_only') is not True:
+                raise ValueError('Enregistrement non confirmé')
+        except (OSError, ValueError, AttributeError):
+            self.preferences = before
+            messagebox.showerror('Codes enregistrés', 'Impossible d’enregistrer la suppression des codes.', parent=self.root)
+            return
+        self.consultation_only = True
+        self.status.set('Codes effacés : consultation seule.')
 
     def edit_database_changed(self):
         self.preferences['edit_database'] = self.edit_database.get()
@@ -1166,25 +1233,22 @@ class Application(ReferenceInterface):
                 menu.add_command(label='Terminer le chemin', command=self.finish_route)
         menu.add_command(label='Rechercher dans la région', accelerator='Ctrl+T', command=lambda: self.show_search(current=True))
         menu.add_separator()
-        if self.mode.get() == 'Référence 1.20' and tile:
+        if self.mode.get() in ('Référence 1.20', 'Modern') and tile:
             menu.add_command(label='Ajouter une annotation…', command=lambda: self.add_note(tile, wx, wy))
-        if record and self.mode.get() == 'Référence 1.20':
+        if record and self.mode.get() in ('Référence 1.20', 'Modern'):
             menu.add_command(label=self.tr('Modifier l’annotation locale…'), command=lambda: self.edit_note(record))
             if record.get('note_id'):
                 menu.add_command(label=self.tr('Masquer l’annotation locale…'), command=lambda: self.hide_local_note(record))
-                if (self.database.get() == 'Francais' and
+                if (self.mode.get() == 'Référence 1.20' and self.database.get() == 'Francais' and
                         str(record.get('source_ref', '')).startswith(self.model.personal_prefix)):
                     menu.add_command(label=self.tr('Partager cette annotation…'),
                                      command=lambda: self.share_personal_note(record))
-            if record.get('source') == 'community' and self.database.get() == 'Francais':
+            if self.mode.get() == 'Référence 1.20' and record.get('source') == 'community' and self.database.get() == 'Francais':
                 menu.add_command(label=self.tr('Corriger pour la communauté…'),
                                  command=lambda: self.correct_community(record))
             if record.get('source') == 'native' and self.database.get() in SOURCES:
                 menu.add_command(label=self.tr('Corriger pour la communauté…'),
                                  command=lambda: self.correct_reference(record))
-        elif record and self.mode.get() == 'Modern' and record.get('source') == 'native' and self.database.get() in SOURCES:
-            menu.add_command(label=self.tr('Corriger pour la communauté…'),
-                             command=lambda: self.correct_reference(record))
         if menu.index('end') is None:
             menu.add_command(label='Annotations non calibrées pour cette carte', state='disabled')
         self.apply_ui_language()
@@ -1208,10 +1272,17 @@ class Application(ReferenceInterface):
         return path
 
     def add_note(self, tile, wx, wy):
-        if not self.can_edit():
+        if not self.can_edit(allow_modern=True):
             return
-        initial = dict(name='', map_id=tile['id'], x=max(0, min(65535, int((wx-tile['x'])*256))),
-                       y=max(0, min(65535, int((wy-tile['y'])*256))), category=37)
+        if self.mode.get() == 'Modern':
+            try:
+                tile, x, y = reference_location_for_forever(self.shown_group, (wx, wy), self.model.tiles.values())
+            except (KeyError, ValueError) as error:
+                messagebox.showerror('Annotation locale', str(error), parent=self.root)
+                return
+        else:
+            x, y = max(0, min(65535, int((wx-tile['x'])*256))), max(0, min(65535, int((wy-tile['y'])*256)))
+        initial = dict(name='', map_id=tile['id'], x=x, y=y, category=37)
         data = AnnotationDialog(self.root, initial, self.model.categories, self.tr,
                                 self.apply_theme if self.dark_theme.get() else None,
                                 category_icons=self.editor_icons, properties=self.model.db['flags'], player_level=self.map.player_level).result
@@ -1226,7 +1297,7 @@ class Application(ReferenceInterface):
             messagebox.showerror('Annotation', str(error), parent=self.root)
 
     def edit_note(self, row):
-        if not self.can_edit():
+        if not self.can_edit(allow_modern=True):
             return
         data = AnnotationDialog(self.root, row, self.model.categories, self.tr,
                                 self.apply_theme if self.dark_theme.get() else None,
@@ -1244,7 +1315,7 @@ class Application(ReferenceInterface):
             messagebox.showerror(self.tr('Annotation locale'), str(error), parent=self.root)
 
     def select_saved_note(self, note_id):
-        row = self.model.by_key.get('note:' + note_id)
+        row = (self.forever_by_key if self.mode.get() == 'Modern' else self.model.by_key).get('note:' + note_id)
         if row:
             self.map.selected = row['key']; self.select_record(row); self.map.schedule()
 
@@ -1278,7 +1349,7 @@ class Application(ReferenceInterface):
             self.render_results()
 
     def hide_local_note(self, row):
-        if not self.can_edit() or not row.get('note_id'): return
+        if not self.can_edit(allow_modern=True) or not row.get('note_id'): return
         if not messagebox.askyesno(self.tr('Annotation locale'),
                                    self.tr('Masquer cette annotation locale ? Elle pourra être restaurée.'), parent=self.root): return
         try:
@@ -1289,7 +1360,7 @@ class Application(ReferenceInterface):
             messagebox.showerror(self.tr('Annotation locale'), str(error), parent=self.root)
 
     def restore_local_note(self):
-        if not self.can_edit(): return
+        if not self.can_edit(allow_modern=True): return
         prefixes = (self.model.native_prefix, self.model.personal_prefix)
         community_refs = ({row['source_ref'] for row in self.model.community if row.get('source_ref')}
                           if self.database.get() == 'Francais' else set())

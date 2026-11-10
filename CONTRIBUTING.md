@@ -2,12 +2,12 @@
 
 ## Signaler une erreur sur la carte
 
-La version préparée s’ouvre en consultation seule : l’édition et le partage
-depuis le client sont désactivés. En attendant leur disponibilité, ouvrez une
-issue en indiquant la langue de la base, la région, le nom du point, l’erreur
+Le client s’ouvre en consultation seule ; le [guide d’édition](docs/EDITION.md)
+explique comment activer l’édition locale. Le partage communautaire n’est pas
+encore validé. Pour signaler une erreur, ouvrez une issue en indiquant la langue
+de la base, la région, le nom du point, l’erreur
 observée et, si possible, sa position correcte et une capture sans données
-personnelles. Le [guide d’édition](docs/EDITION.md) décrit les capacités du code
-et leurs limites.
+personnelles.
 
 ## Code, traductions et rapports de bugs
 

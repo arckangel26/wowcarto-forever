@@ -7,7 +7,7 @@
 3. Garder « Créer un raccourci sur le Bureau » si souhaité, puis cliquer sur « Installer ».
 4. À la dernière étape, garder « Lancer WoWCarto Forever » et cliquer sur « Terminer ».
 
-Le client Windows 64 bits `0.9.1` fonctionne sans installer Python et sans commande à saisir.
+Le client Windows 64 bits `0.9.2` fonctionne sans installer Python et sans commande à saisir.
 Au premier démarrage, sélectionner le fichier `Wow.exe` du jeu Forever, puis choisir
 la qualité SD ou HD et attendre la génération locale. Sélectionner ensuite la base
 française ou anglaise : elle est téléchargée et vérifiée avant ouverture en consultation.
@@ -51,13 +51,16 @@ fiche. « Catégories affichées » filtre les icônes, sans modifier les bases.
 
 Pour ajouter une annotation, choisir les données **1.20**, activer **Mode édition**
 et sélectionner la même langue de base dans **Base autorisée pour l'édition**.
+Après le premier lancement en consultation, activer le stylo, appuyer sur
+`Ctrl+Alt+A`, saisir `6895` et valider. `Ctrl+Alt+L` affiche les codes ;
+`Ctrl+Alt+P` les efface après confirmation. Voir le [guide d’édition](EDITION.md).
 Faire un clic droit sur la carte, puis « Ajouter une annotation », ou `Ctrl+N`
 pour le centre de la carte. Le clic droit sur un point permet sa modification.
 Les annotations personnelles peuvent être masquées puis restaurées. Les bases
 originales restent immuables ; les modifications sont des surcharges SQLite.
-Les données Legacy candidates sont en lecture seule. Forever affiche des
-annotations historiques recalées ; il ne permet pas de créer des coordonnées
-Forever prétendument validées.
+Les données Legacy candidates sont en lecture seule. Forever permet des ajouts
+locaux sur les zones couvertes par la correspondance expérimentale avec la 1.20 ;
+les coordonnées et annotations historiques ne sont pas toutes validées.
 
 `Ctrl+,` ouvre les préférences. Le changement d'interface conserve la vue,
 la sélection, la recherche et les fenêtres ouvertes. La fermeture enregistre

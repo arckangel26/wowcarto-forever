@@ -75,6 +75,26 @@ def project_forever(group_id, point):
             16 * (matrix[1][0] * x + matrix[1][1] * y + matrix[1][2]))
 
 
+def reference_location_for_forever(group, point, tiles):
+    """Convert a Forever point to a covered 1.20 tile without clamping."""
+    matches = [(ident, row) for ident, row in FOREVER_REGISTRATION.items() if row[0] == group]
+    if len(matches) != 1:
+        raise ValueError('Cette zone ne dispose pas de calibration historique.')
+    group_id, (_, (x0, y0), matrix) = matches[0]
+    a, b, tx = matrix[0]
+    c, d, ty = matrix[1]
+    determinant = a*d - b*c
+    if abs(determinant) < 1e-12:
+        raise ValueError('Calibration de carte non inversible.')
+    x, y = point[0]/16 - tx, point[1]/16 - ty
+    wx, wy = x0 + 4*(d*x-b*y)/determinant, y0 + 4*(a*y-c*x)/determinant
+    for tile in tiles:
+        if (tile['group_id'] == group_id and tile['x'] <= wx < tile['x']+256
+                and tile['y'] <= wy < tile['y']+256):
+            return tile, int((wx-tile['x'])*256), int((wy-tile['y'])*256)
+    raise ValueError('Ce point se trouve hors des zones de référence 1.20 calibrées.')
+
+
 def project_historical_records(records):
     """Project historical records without dropping points for missing terrain."""
     for row in records:
