@@ -67,9 +67,9 @@ def windows_version_resource(version):
 
 
 def selected_icon(path, *, local_data):
-    """Use the existing original icon only for explicitly private resource builds."""
-    if path is None and local_data:
-        candidate = ROOT / 'outputs/branding-original-20261105/reproduced-120.ico'
+    """Use the project compass icon unless another icon was explicitly selected."""
+    if path is None:
+        candidate = ROOT / 'assets/branding/wowcarto-compass.ico'
         if candidate.is_file(): path = candidate
     if path is None:
         return None

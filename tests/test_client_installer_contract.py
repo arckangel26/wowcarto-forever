@@ -29,8 +29,12 @@ class WindowsPackageTests(unittest.TestCase):
                 windows_version(version)
         self.assertEqual(windows_version('1.2.3.4'), ('1.2.3.4', (1, 2, 3, 4)))
 
-    def test_no_data_build_does_not_implicitly_include_original_icon(self):
-        self.assertIsNone(selected_icon(None, local_data=None))
+    def test_no_data_build_uses_project_compass_icon(self):
+        icon = selected_icon(None, local_data=None)
+        self.assertEqual(icon.name, 'wowcarto-compass.ico')
+        from PIL import Image
+        with Image.open(icon) as image:
+            self.assertTrue({(16, 16), (32, 32), (48, 48), (256, 256)} <= image.ico.sizes())
 
     def test_explicit_invalid_icon_is_rejected_before_any_build(self):
         with tempfile.TemporaryDirectory() as directory:
