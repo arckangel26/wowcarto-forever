@@ -8,7 +8,7 @@ Read the complete [French presentation](README.md) and the [Windows guide](docs/
 The first-run setup generates maps from the user's local WoW Forever installation,
 then downloads verified French and English 1.20 reference databases. Consultation
 works offline after setup. Historical entries and positions are not all verified
-for Forever. The project is a preview; no installer release is published here yet.
+for Forever. An unsigned installer is available as a [preview release](https://github.com/arckangel26/wowcarto-forever/releases/tag/v0.9.1-preview-compass) in this private repository.
 
 Original project code is licensed under [GPL-3.0-only](LICENSE). Third-party
 resources and their conditions are documented in [NOTICE](NOTICE.md).
