@@ -7,9 +7,41 @@ import math
 from pathlib import Path
 import tkinter as tk
 
-from PIL import Image, ImageEnhance, ImageTk
+from PIL import Image, ImageDraw, ImageEnhance, ImageTk
 
 from tools.map_packs import checked_image
+
+
+NATIVE_DIFFICULTY_COLORS = ('#c9d8e1', '#6be33c', '#fffc1d', '#fbb214', '#f82515', '#aa2515')
+MARKER_DISPLAY_SCALE = 2
+
+
+def native_zoom_visibility(category, scale):
+    """1.20 thresholds in rendered pixels per 256-unit tile (200, 400, 600)."""
+    tier = category.get('zoom_tier', 1)
+    if tier not in (1, 2, 3): tier = 1
+    pixels = round(scale * 256)
+    return pixels >= (0, 200, 400)[tier - 1], pixels >= (200, 400, 600)[tier - 1]
+
+
+def native_marker_color(category, row, player_level, *, color_by_level=True):
+    """Port of 1.20 routines 52C7FC / 4DA524 / 4DA580 (local x86 reference)."""
+    fallback = category.get('color_rgb', '#eff0de')
+    minimum, maximum = row.get('min_level', 0), row.get('max_level', 0)
+    if not color_by_level or category.get('native_class') != 1 or not minimum:
+        return fallback
+    level = min(max(player_level, minimum), maximum)
+    delta = level - player_level
+    if delta >= 9: index = 5
+    elif delta >= 5: index = 4
+    elif delta >= 3: index = 3
+    elif delta >= -2: index = 2
+    else:
+        grey = -(player_level // 10) - 5
+        if player_level >= 40: grey = -(player_level // 5) - 1
+        if player_level >= 60: grey = -9
+        index = 1 if delta > grey else 0
+    return NATIVE_DIFFICULTY_COLORS[index]
 
 
 class MapCanvas(tk.Canvas):
@@ -23,8 +55,25 @@ class MapCanvas(tk.Canvas):
         self.on_region_select = None
         self.region_icon = None
         self.cache, self.icons = OrderedDict(), {}
+        self.categories = {}
+        self.player_level = 5
+        self.marker_scale = MARKER_DISPLAY_SCALE
+        self.annotations_visible = True
+        self.color_by_level = True
+        self.category_colors = {}
+        self.category_fonts = {}
+        self.paths_visible = False
+        self.path_decoder = None
+        self.path_cache = {}
+        self.on_edit = None
+        self.on_route_point = None
+        self.on_route_finish = None
+        self.route_editing = False
+        self.personal_paths = []
+        self.category_filter = None
         self.cx = self.cy = 0.
         self.scale = 1.
+        self.one_to_one_scale = 4.
         self.legend, self.dim, self.high = False, False, True
         self.selected, self.dragging, self.start = None, False, None
         self.pending = None
@@ -32,7 +81,7 @@ class MapCanvas(tk.Canvas):
         self.bind('<ButtonPress-1>', self.press)
         self.bind('<B1-Motion>', self.drag)
         self.bind('<ButtonRelease-1>', self.release)
-        self.bind('<Double-Button-1>', lambda e: self.zoom_to(1., e.x, e.y))
+        self.bind('<Double-Button-1>', self.double_click)
         self.bind('<Button-3>', self.context)
         self.bind('<MouseWheel>', lambda e: self.zoom_to(self.scale * (1.25 if e.delta > 0 else .8), e.x, e.y))
         self.bind('<Motion>', self.hover)
@@ -42,10 +91,20 @@ class MapCanvas(tk.Canvas):
 
     def set_scene(self, tiles, records, *, fit=True):
         self.tiles, self.records, self.selected = list(tiles), list(records), None
+        self.path_cache.clear()
         if fit:
             self.fit()
         else:
             self.schedule()
+
+    def destroy(self):
+        if self.pending is not None:
+            self.after_cancel(self.pending)
+            self.pending = None
+        for image in self.cache.values():
+            image.close()
+        self.cache.clear()
+        super().destroy()
 
     def bounds(self):
         if not self.tiles:
@@ -118,6 +177,8 @@ class MapCanvas(tk.Canvas):
 
     def release(self, event):
         if not self.dragging:
+            if self.route_editing and self.on_route_point:
+                self.on_route_point(*self.world(event.x, event.y)); self.start = None; return
             marker = next((r for x, y, r in reversed(self.region_hits)
                            if abs(x - event.x) < 8 and abs(y - event.y) < 8), None)
             if marker and self.on_region_select:
@@ -125,6 +186,11 @@ class MapCanvas(tk.Canvas):
                 self.start = None
                 return
             record = self.hit(event.x, event.y)
+            if event.state & 1 and self.on_edit:
+                wx, wy = self.world(event.x, event.y)
+                self.on_edit(record, self.tile_at(wx, wy), wx, wy)
+                self.start = None
+                return
             if record:
                 self.selected = record['key']
                 self.on_select(record)
@@ -135,6 +201,10 @@ class MapCanvas(tk.Canvas):
                 if tile:
                     self.center(tile['x'] + tile.get('width', 256) / 2, tile['y'] + tile.get('height', 256) / 2)
         self.start = None
+
+    def double_click(self, event):
+        if self.route_editing and self.on_route_finish: self.on_route_finish()
+        else: self.zoom_to(self.one_to_one_scale, event.x, event.y)
 
     def context(self, event):
         record = self.hit(event.x, event.y)
@@ -154,19 +224,31 @@ class MapCanvas(tk.Canvas):
             self.pending = self.after(12, self.draw)
 
     def asset_image(self, tile):
-        asset = tile.get('preview') if self.scale < .35 and tile.get('preview') else (
-            tile.get('high') if self.high and tile.get('high') else tile.get('standard'))
-        if not asset:
-            return None
-        key = (str(tile['root']), asset['path'])
-        if key not in self.cache:
-            self.cache[key] = checked_image(tile['root'], asset)
-            while len(self.cache) > 32:
-                self.cache.popitem(last=False)
-        self.cache.move_to_end(key)
-        return self.cache[key]
+        # A missing preview/HD variant must not hide a verified standard image.
+        assets = ([tile.get('preview')] if self.scale < .35 else [])
+        assets += ([tile.get('high')] if self.high else []) + [tile.get('standard')]
+        failure = None
+        for asset in assets:
+            if not asset:
+                continue
+            key = (str(tile['root']), asset['path'])
+            try:
+                if key not in self.cache:
+                    self.cache[key] = checked_image(tile['root'], asset)
+                    while len(self.cache) > 32:
+                        _, previous = self.cache.popitem(last=False)
+                        previous.close()
+                self.cache.move_to_end(key)
+                return self.cache[key]
+            except (OSError, ValueError) as error:
+                failure = error
+        if failure:
+            raise failure
+        return None
 
     def draw(self):
+        if self.pending is not None:
+            self.after_cancel(self.pending)
         self.pending = None
         self.delete('all')
         self.photos, self.hits, self.region_hits = [], [], []
@@ -204,16 +286,25 @@ class MapCanvas(tk.Canvas):
         if len(self.region_outline) >= 3:
             coords = [value for point in self.region_outline for value in self.screen(*point)]
             self.create_line(*coords, *coords[:2], fill='#ffe35a', width=2)
+        if self.paths_visible and self.annotations_visible:
+            self.draw_native_paths(width, height)
         drawn = 0
         occupied = set()
-        selected = None
         # User annotations must not disappear behind a dense historical layer.
         ordered = chain((row for row in self.records if row.get('source') == 'personal'),
                         (row for row in self.records if row.get('source') == 'community'),
                         (row for row in self.records if row.get('source') not in ('personal', 'community')))
+        if not self.annotations_visible: ordered = ()
         for row in ordered:
+            if self.category_filter is not None and row['category'] not in self.category_filter:
+                continue
+            category = self.categories.get(row['category'], {})
+            marker_visible, label_visible = native_zoom_visibility(category, self.scale)
+            if not marker_visible:
+                continue
             px, py = self.screen(row['wx'], row['wy'])
-            if not (-12 < px < width + 12 and -12 < py < height + 12):
+            margin = 6 * self.marker_scale
+            if not (-margin < px < width + margin and -margin < py < height + margin):
                 continue
             cell = (int(px // 12), int(py // 12))
             if (drawn >= 1800 or cell in occupied) and row['key'] != self.selected and row.get('source') != 'personal':
@@ -221,31 +312,80 @@ class MapCanvas(tk.Canvas):
             occupied.add(cell)
             drawn += 1
             self.hits.append((px, py, row))
-            if row['key'] == self.selected:
-                selected = px, py, row
-            icon = self.icons.get(row['category'])
+            px, py = round(px), round(py)
+            color = self.marker_color(row)
+            # Keep the authored glyph and colour field on the same pixel grid.
+            # Display scale is independent of terrain zoom and UI icon size.
+            size = self.marker_scale
+            elite = category.get('native_class') == 1 and (16 in (row.get('property_ids') or ()) or
+                    any(str(name).casefold() in ('elite', 'élite') for name in (row.get('property_names') or ())))
+            large = category.get('native_class') == 1 and (elite or row['category'] in (5, 6, 32))
+            lower, upper = (-3, 4) if large else (-2, 3)
+            self.create_rectangle(px + lower * size, py + lower * size, px + upper * size, py + upper * size,
+                                  fill=color, outline='', width=0, tags=('annotation',))
+            icon_category = 6 if elite and row['category'] == 7 else row['category']
+            icon = self.icons.get(icon_category) or self.icons.get(row['category'])
             if icon:
-                self.create_image(px, py, image=icon)
-            else:
-                color = '#5fd9ff' if row.get('source') == 'personal' else '#f5c850'
-                self.create_oval(px - 3, py - 3, px + 3, py + 3, fill=color, outline='#2d2d2d')
-            if self.legend:
-                self.create_text(px + 10, py, text=row['name'], fill='#fff6bb', anchor='w', font=('Segoe UI', 8), tags=('legend',))
-        if selected:
-            px, py, row = selected
-            self.create_oval(px - 10, py - 10, px + 10, py + 10, outline='#ffed00', width=2)
-            self.create_text(px + 12, py - 10, text=row['name'], fill='#fff695', anchor='sw', font=('Segoe UI', 10, 'bold'))
-        for marker in self.region_markers:
+                self.create_image(px - 5 * size, py - 5 * size, image=icon, anchor='nw', tags=('annotation',))
+            if self.legend and label_visible:
+                self.create_text(px + 6 * size, py, text=row['name'], fill=color, anchor='w', font=self.legend_font(row['category']), tags=('legend',))
+        for marker in self.region_markers if self.annotations_visible else ():
             px, py = self.screen(marker['wx'], marker['wy'])
             if 0 <= px <= width and 0 <= py <= height:
                 self.region_hits.append((px, py, marker))
                 if self.region_icon:
-                    self.create_image(px, py, image=self.region_icon)
+                    self.create_image(px - 5 * self.marker_scale, py - 5 * self.marker_scale,
+                                      image=self.region_icon, anchor='nw')
                 else:
                     self.create_oval(px-4, py-4, px+4, py+4, fill='#ffe35a', outline='#333333')
         if missing:
             self.status(self.translate('{count} carte(s) absente(s) ou invalides dans cette vue ; aucune substitution.').format(count=len(missing)))
         self.on_view(self)
+
+    def marker_color(self, row):
+        category = self.categories.get(row['category'], {})
+        if row['category'] in self.category_colors:
+            category = dict(category, color_rgb=self.category_colors[row['category']])
+        return native_marker_color(category, row, self.player_level, color_by_level=self.color_by_level)
+
+    def legend_font(self, ident):
+        if ident in self.category_fonts: return self.category_fonts[ident]
+        category = self.categories.get(ident, {})
+        styles = {0: 'normal', 1: 'bold', 2: 'italic', 3: 'bold italic'}
+        size = category.get('font_size', 8)
+        return (category.get('font_name') or 'Arial', size if 4 <= size <= 48 else 8,
+                styles.get(category.get('font_style', 0), 'normal'))
+
+    def draw_native_paths(self, width, height):
+        if self.path_decoder is None and not self.personal_paths: return
+        overlay = None
+        paths = []
+        for row in self.records:
+            if not row.get('links') or (self.category_filter is not None and row['category'] not in self.category_filter): continue
+            key = row['key']
+            if key not in self.path_cache: self.path_cache[key] = self.path_decoder(row)
+            path = self.path_cache[key]
+            if path is None: continue
+            if not path.always_visible and not native_zoom_visibility(self.categories.get(row['category'], {}), self.scale)[0]: continue
+            color = self.marker_color(row)
+            paths.append((path, color))
+        paths.extend((path, '#ffb438') for path in self.personal_paths if path.always_visible or self.scale >= .35)
+        for path, color in paths:
+            if not path.points: continue
+            points = [self.screen(x, y) for x, y in path.points]
+            if (max(x for x, y in points) < 0 or min(x for x, y in points) > width or
+                    max(y for x, y in points) < 0 or min(y for x, y in points) > height): continue
+            if overlay is None: overlay = Image.new('RGBA', (width, height)); pen = ImageDraw.Draw(overlay)
+            rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+            if len(points) == 1:
+                x, y = points[0]; pen.rectangle((x-2, y-2, x+2, y+2), fill=(*rgb, path.opacity)); continue
+            if path.closed:
+                pen.polygon(points, fill=(*rgb, path.fill_opacity))
+                points.append(points[0])
+            pen.line(points, fill=(*rgb, path.opacity), width=1)
+        if overlay is not None:
+            photo = ImageTk.PhotoImage(overlay); self.photos.append(photo)
+            self.create_image(0, 0, image=photo, anchor='nw', tags=('native-paths',))
 
     def miniature(self, size=(150, 105)):
         x0, y0, x1, y1 = self.bounds()

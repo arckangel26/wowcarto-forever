@@ -3,18 +3,23 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
 import sys
 import tempfile
 import threading
+import traceback
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 import uuid
 
 from PIL import Image, ImageTk
 from tools.clone_map import MapCanvas
+from tools.clone_reference_ui import ReferenceInterface
+from tools.clone_search_dialog import SearchDialog, has_filter
+from tools.clone_paths import decode_native_path
 from tools.clone_annotation_dialog import AnnotationDialog
 from tools.clone_i18n import translate
 from tools.clone_model import Model, folded
@@ -28,6 +33,11 @@ from tools.community_transport import SNAPSHOT_URL
 from urllib.error import HTTPError
 from tools.native_additions import parse_additions
 from tools.map_packs import checked_image, load_pack, local_file
+
+
+VERSION = '0.9.1'
+DATA_LABELS = {'Référence 1.20': '1.20 / Classic', 'Legacy': 'Legacy 1.08b (candidat)',
+               'Modern': 'Forever 1.60.1.70755'}
 
 
 def restore_community_caches(model, community, reference_community):
@@ -49,11 +59,13 @@ def restore_community_caches(model, community, reference_community):
     return errors
 
 
-class Application:
-    def __init__(self, data, state):
+class Application(ReferenceInterface):
+    def __init__(self, data, state, *, offline=False, consultation_only=False):
+        self.offline = offline
         self.data = Path(data)
         self.preferences_path = Path(state).with_name('client-preferences.json')
         self.preferences = self.load_preferences()
+        self.consultation_only = consultation_only or self.preferences.get('consultation_only') is True
         self.store = Store(state)
         self.community = CommunityClient(Path(state).with_name('community-cache.json'))
         self.model = Model(self.data, self.store)
@@ -61,10 +73,20 @@ class Application:
         cache_errors = restore_community_caches(self.model, self.community, self.reference_community)
         self.languages = self.model.available_languages()
         self.root = tk.Tk()
-        self.root.title('WoWCarto Forever — client intégré en validation')
+        self.version = VERSION
+        app_icon = Path(sys.executable).parent / 'application.ico' if getattr(sys, 'frozen', False) else self.data / 'interface-originale' / 'application.ico'
+        if app_icon.is_file():
+            try: self.root.iconbitmap(str(app_icon))
+            except tk.TclError: pass
+        self.root.report_callback_exception = self.callback_error
+        self.root.title('WoWCarto Forever')
         self.root.geometry('852x735')
         self.root.minsize(800, 550)
-        self.mode = tk.StringVar(value='Référence 1.20')
+        available_modes = {s['mode'] for s in self.model.sets}
+        self.mode = tk.StringVar(value=self.preferences.get('map_mode')
+                                if self.preferences.get('map_mode') in available_modes else 'Référence 1.20')
+        self.interface = tk.StringVar(value=self.preferences.get('interface', 'Legacy')
+                                     if self.preferences.get('interface') in ('Legacy', 'Modern') else 'Legacy')
         self.database = tk.StringVar(value=self.preferences.get('database')
                                      if self.preferences.get('database') in self.languages else 'Francais')
         self.edit_enabled = tk.BooleanVar(value=False)
@@ -83,13 +105,37 @@ class Application:
         self.shown_group = None
         self.root.option_add('*Font', ('MS Sans Serif', 8))
         self.load_interface_icons()
-        bar = tk.Frame(self.root, height=25, bd=1, relief='raised')
+        self.modern_header = tk.Frame(self.root, padx=18, pady=12)
+        heading = tk.Frame(self.modern_header); heading.pack(fill='x')
+        self.brand = tk.Label(heading, text='WOWCARTO  /  FOREVER', font=('Segoe UI', 16, 'bold'))
+        self.brand.pack(side='left')
+        tk.Button(heading, text='Legacy', command=lambda: self.set_interface('Legacy')).pack(side='right')
+        tk.Button(heading, text='Préférences', command=self.show_preferences).pack(side='right', padx=8)
+        self.source_label = tk.Label(self.modern_header, text='', anchor='w', font=('Segoe UI', 9))
+        self.source_label.pack(fill='x', pady=(3, 10))
+        quick = tk.Frame(self.modern_header); quick.pack(fill='x')
+        tk.Label(quick, text='Recherche', font=('Segoe UI', 10)).pack(side='left', padx=(0, 8))
+        self.quick_entry = tk.Entry(quick, textvariable=self.query, font=('Segoe UI', 11), relief='solid', bd=1)
+        self.quick_entry.pack(side='left', fill='x', expand=True, ipady=6)
+        self.quick_entry.bind('<Return>', lambda e: self.search())
+        for title, action in [('Chercher', self.search), ('Filtres…', self.show_search),
+                              ('Nouvelle annotation…', self.add_at_center), ('Synchroniser', self.sync)]:
+            tk.Button(quick, text=title, command=action, padx=8, pady=5).pack(side='left', padx=(6, 0))
+        bar = self.legacy_bar = tk.Frame(self.root, height=25, bd=1, relief='raised')
         bar.pack(fill='x'); bar.pack_propagate(False)
         self.flag = tk.Menubutton(bar, text='🇫🇷', relief='flat', width=3)
         self.flag.pack(side='left')
         choices = tk.Menu(self.flag, tearoff=False); self.flag['menu'] = choices
-        for label in ('Référence 1.20', 'Legacy', 'Modern'):
-            choices.add_radiobutton(label=label, variable=self.mode, value=label, command=self.change_mode)
+        data_menu = tk.Menu(choices, tearoff=False)
+        choices.add_cascade(label='Jeu de données', menu=data_menu)
+        for mode in ('Référence 1.20', 'Legacy', 'Modern'):
+            if mode in available_modes:
+                data_menu.add_radiobutton(label=DATA_LABELS[mode], variable=self.mode, value=mode, command=self.change_mode)
+        interface_menu = tk.Menu(choices, tearoff=False)
+        choices.add_cascade(label='Interface', menu=interface_menu)
+        for interface in ('Legacy', 'Modern'):
+            interface_menu.add_radiobutton(label=interface, variable=self.interface, value=interface, command=self.change_interface)
+        self.application_menu = choices
         choices.add_separator()
         for value in self.languages:
             label = {'Francais': 'FR', 'US': 'EN'}.get(value, value.upper())
@@ -110,48 +156,84 @@ class Application:
         choices.add_command(label='Importer mes annotations…', command=self.import_notes)
         choices.add_command(label='Exporter mes annotations…', command=self.export_notes)
         choices.add_command(label='Restaurer une annotation masquée…', command=self.restore_local_note)
+        choices.add_command(label='Sauvegarder le profil…', command=self.backup_profile)
+        choices.add_command(label='Restaurer une sauvegarde…', command=self.restore_profile)
+        choices.add_command(label='Préférences…', command=self.show_preferences)
         choices.add_command(label='Partager un fichier d’ajouts…', command=self.share_additions)
         choices.add_command(label='Synchroniser', command=self.sync)
         choices.add_command(label='Plans Legacy…', command=self.show_legacy_plans)
         for index, hint, fn in [(15, 'Garder au premier plan', self.toggle_topmost),
-                                (26, 'Mise à jour', self.sync),
-                                (22, 'Informations sur la carte', self.show_mode_info),
-                                (25, 'Génération des cartes', self.show_mode_info),
-                                (27, 'Options', self.show_mode_info),
-                                (7, 'Informations', self.show_mode_info),
+                                (26, 'Mise à jour des bases', self.show_update_dialog),
+                                (22, 'Aide et raccourcis (H)', self.show_help),
+                                (25, 'Préparer les cartes', self.show_resource_manager),
+                                (27, 'Options', self.show_preferences),
+                                (7, 'Informations sur le programme', self.show_about),
                                 (24, 'Mode édition', self.toggle_edit_mode)]:
             self.icon_button(bar, index, hint, fn).pack(side='left')
-        for index, hint, fn in reversed([(2, 'Régions', lambda: self.show_pane('regions')),
-                                          (3, 'Annotations', lambda: self.show_pane('results')),
-                                          (4, 'Recherche', self.show_search),
-                                          (5, 'Détails', lambda: self.show_pane('details'))]):
+        for index, hint, fn in reversed([(2, 'Liste des régions (F1)', lambda: self.show_pane('regions')),
+                                          (3, 'Liste Master (F2)', lambda: self.show_pane('master')),
+                                          (4, 'Résultats de recherche (F3)', lambda: self.show_pane('results')),
+                                          (5, 'Informations (F4)', lambda: self.show_pane('details'))]):
             self.icon_button(bar, index, hint, fn).pack(side='right')
-        body = tk.Frame(self.root); body.pack(fill='both', expand=True)
-        side = tk.Frame(body, width=25, bd=1, relief='raised'); side.pack(side='left', fill='y'); side.pack_propagate(False)
+        body = self.body = tk.Frame(self.root); body.pack(fill='both', expand=True)
+        side = self.legacy_side = tk.Frame(body, width=25, bd=1, relief='raised'); side.pack(side='left', fill='y'); side.pack_propagate(False)
         for index, hint, fn in [(0, 'Légendes', self.toggle_legend),
-                                (1, 'Chemins', self.not_implemented),
-                                (16, 'Carte générale', lambda: self.map.fit()),
+                                (1, 'Afficher les chemins', self.toggle_paths),
+                                (16, 'Carte générale des trajets', self.show_overview),
                                 (17, 'Assombrir la carte', self.toggle_dim),
-                                (19, 'Rechercher', self.show_search),
-                                (6, 'Historique des recherches', self.show_search)]:
-            self.icon_button(side, index, hint, fn).pack(side='top', pady=1)
-        right = tk.Frame(body, width=251, bd=1, relief='sunken'); right.pack(side='right', fill='y'); right.pack_propagate(False)
-        center = tk.Frame(body, bd=1, relief='sunken'); center.pack(side='left', fill='both', expand=True)
+                                (19, 'Rechercher (Ctrl+F)', lambda: self.show_search(clear=True)),
+                                (6, 'Recherche précédente (Ctrl+G)', self.show_search)]:
+            button = self.icon_button(side, index, hint, fn)
+            if fn is None: button.configure(state='disabled')
+            button.pack(side='top', pady=1)
+        right = self.sidebar = tk.Frame(body, width=251, bd=1, relief='sunken'); right.pack(side='right', fill='y'); right.pack_propagate(False)
+        center = self.map_container = tk.Frame(body, bd=1, relief='sunken'); center.pack(side='left', fill='both', expand=True)
         self.map = MapCanvas(center, on_select=self.select_record, on_context=self.context,
                              on_view=self.view_changed, status=self.status.set, translate=self.tr)
         self.map.on_region_select = self.select_region_marker
+        self.map.on_edit = self.map_edit
+        self.map.path_decoder = self.native_path
+        self.map.on_route_point = self.append_route_point
+        self.map.on_route_finish = self.finish_route
+        self.map.marker_scale = 1 if self.preferences.get('marker_scale') == 1 else 2
+        colors = self.preferences.get('legend_colors', {})
+        fonts = self.preferences.get('legend_fonts', {})
+        self.map.category_colors = {int(key): value for key, value in (colors if isinstance(colors, dict) else {}).items()
+            if str(key).isdigit() and isinstance(value, str) and re.fullmatch(r'#[0-9a-fA-F]{6}', value)}
+        self.map.category_fonts = {int(key): tuple(value) for key, value in (fonts if isinstance(fonts, dict) else {}).items()
+            if str(key).isdigit() and isinstance(value, list) and len(value) == 3 and isinstance(value[0], str)
+            and type(value[1]) is int and 4 <= value[1] <= 48 and value[2] in ('normal', 'bold', 'italic', 'bold italic')}
         self.map.pack(fill='both', expand=True)
+        choices.add_command(label='Catégories affichées…', command=self.show_map_filters)
         minirow = tk.Frame(right, height=108); minirow.pack(fill='x'); minirow.pack_propagate(False)
         self.mini = tk.Canvas(minirow, width=100, height=100, bg='#00242c', highlightthickness=1)
         self.mini.place(x=10, y=2)
         self.mini.bind('<Button-1>', self.mini_click)
         tk.Label(minirow, text='Niveau du Perso').place(x=118, y=53)
-        self.level = tk.StringVar(value='5')
-        tk.Entry(minirow, textvariable=self.level, width=3).place(x=216, y=50)
+        saved_level = self.preferences.get('player_level', 5)
+        self.map.player_level = saved_level if type(saved_level) is int and 1 <= saved_level <= 85 else 5
+        self.level = tk.StringVar(value=str(self.map.player_level))
+        level_entry = tk.Entry(minirow, textvariable=self.level, width=3)
+        level_entry.place(x=216, y=50)
+        self.level.trace_add('write', lambda *args: self.update_player_level())
+        level_entry.bind('<FocusOut>', lambda event: self.update_player_level(normalize=True))
+        level_entry.bind('<Return>', lambda event: self.update_player_level(normalize=True))
         self.zoom = tk.Scale(minirow, from_=0, to=100, showvalue=False, orient='horizontal', length=120,
                              command=self.zoom_slider)
         self.zoom.place(x=116, y=72)
         self.panes = tk.Frame(right); self.panes.pack(fill='both', expand=True)
+        self.modern_tools = tk.Frame(right, padx=10, pady=8)
+        tk.Label(self.modern_tools, text='EXPLORATION', font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(0, 6))
+        actions = tk.Frame(self.modern_tools); actions.pack(fill='x')
+        actions.columnconfigure(0, weight=1); actions.columnconfigure(1, weight=1)
+        for index, (title, action) in enumerate([('Régions', lambda: self.show_pane('regions')),
+                              ('Résultats', lambda: self.show_pane('results')),
+                              ('Détails', lambda: self.show_pane('details')),
+                              ('Catégories affichées…', self.show_map_filters),
+                              ('Recentrer la carte', lambda: self.map.fit()),
+                              ('Légendes', self.toggle_legend), ('Assombrir la carte', self.toggle_dim),
+                              ('Menu / données…', self.show_application_menu)]):
+            tk.Button(actions, text=title, command=action, anchor='w', padx=5, pady=4).grid(row=index // 2, column=index % 2, sticky='ew', padx=2, pady=2)
         self.region_pane = tk.Frame(self.panes)
         filterbar = tk.Frame(self.region_pane, height=27); filterbar.pack(fill='x'); filterbar.pack_propagate(False)
         tk.Label(filterbar, text='Filtre (F5):').pack(side='left', padx=4)
@@ -170,9 +252,8 @@ class Application:
         self.regions.pack(side='left', fill='both', expand=True)
         scroll = ttk.Scrollbar(self.region_pane, command=self.regions.yview); scroll.pack(side='right', fill='y'); self.regions.configure(yscrollcommand=scroll.set)
         self.regions.bind('<<TreeviewSelect>>', self.select_group)
-        self.result_window = tk.Toplevel(self.root); self.result_window.title('Résultats des annotations')
-        self.result_window.geometry('420x480'); self.result_window.withdraw()
-        self.result_window.protocol('WM_DELETE_WINDOW', self.result_window.withdraw)
+        self.results_pane = tk.Frame(self.panes)
+        self.result_window = self.results_pane
         results_body = tk.Frame(self.result_window); results_body.pack(fill='both', expand=True)
         self.results_tree = ttk.Treeview(results_body, show='tree')
         result_scroll = ttk.Scrollbar(results_body, command=self.results_tree.yview)
@@ -188,26 +269,39 @@ class Application:
         self.next_results = tk.Button(result_nav, text='Suivant', command=lambda: self.move_results(1), state='disabled')
         self.next_results.pack(side='right')
         self.search_matches, self.results_offset = [], 0
-        self.detail_window = tk.Toplevel(self.root); self.detail_window.title('Détails de l’annotation')
-        self.detail_window.geometry('400x300'); self.detail_window.withdraw()
-        self.detail_window.protocol('WM_DELETE_WINDOW', self.detail_window.withdraw)
+        self.detail_window = tk.Frame(self.panes)
+        self.database_info = tk.Label(self.detail_window, text='', anchor='nw', justify='left', wraplength=225, padx=6, pady=6)
+        self.database_info.pack(fill='x')
         self.detail = tk.Text(self.detail_window, wrap='word', font=('MS Sans Serif', 8))
         self.detail.pack(fill='both', expand=True)
+        self.detail.bind('<Key>', lambda e: None if e.state & 4 and e.keysym.lower() in ('c', 'a') else 'break')
+        self.create_reference_panes()
         self.show_pane('regions')
         tk.Label(self.root, textvariable=self.status, anchor='w', bd=1, relief='sunken').pack(fill='x', side='bottom')
-        self.root.bind('<Control-f>', lambda e: self.show_search())
-        self.root.bind('<F5>', lambda e: self.filter_entry.focus_set())
+        self.bind_reference_shortcuts()
+        self.root.bind('<Control-n>', lambda e: self.add_at_center())
+        self.root.bind('<Control-comma>', lambda e: self.show_preferences())
+        self.root.bind('<F5>', lambda e: (self.show_pane('regions'), self.filter_entry.focus_set()))
         self.root.bind('<Control-s>', lambda e: self.status.set(self.tr('Annotations locales enregistrées automatiquement.')))
         self.root.protocol('WM_DELETE_WINDOW', self.close)
         self.apply_ui_language()
         if self.dark_theme.get():
             self.apply_theme()
         self.change_mode()
-        self.root.after(250, self.initial_view)
+        self.apply_interface()
+        self.initial_after = self.root.after(250, self.initial_view)
         if cache_errors:
             self.root.after(500, lambda: self.status.set(self.tr('Cache communautaire illisible : fichier conservé.')))
 
     def initial_view(self):
+        if getattr(self, 'initial_after', None) is not None:
+            self.root.after_cancel(self.initial_after)
+            self.initial_after = None
+        if not self.root.winfo_ismapped() or self.map.winfo_width() < 200 or self.map.winfo_height() < 200:
+            self.initial_after = self.root.after(100, self.initial_view)
+            return
+        if self.restore_session():
+            return
         self.map.fit()
         if self.shown_region in self.region_outlines:
             self.map.fit_bounds(polygon_bounds(self.region_outlines[self.shown_region]))
@@ -215,6 +309,186 @@ class Application:
             point = self.region_centers.get(self.shown_region)
             if point:
                 self.map.center(point[0], point[1], .8)
+
+    def callback_error(self, kind, value, tb):
+        """Keep a recoverable local trace of GUI callback failures."""
+        path = self.store.path.with_name('client-errors.log')
+        try:
+            with path.open('a', encoding='utf-8') as stream:
+                traceback.print_exception(kind, value, tb, file=stream)
+        except OSError:
+            pass
+        messagebox.showerror('WoWCarto Forever', f'{value}\n\nJournal local : {path}', parent=self.root)
+
+    def set_interface(self, value):
+        self.interface.set(value)
+        self.change_interface()
+
+    def change_interface(self):
+        self.apply_interface()
+        self.update_title()
+        self.preferences['interface'] = self.interface.get()
+        self.save_preferences()
+
+    def apply_interface(self):
+        """Rearrange shared widgets; never reload data or reconstruct editors."""
+        modern = self.interface.get() == 'Modern'
+        self.modern_header.pack_forget()
+        self.legacy_bar.pack_forget()
+        self.legacy_side.pack_forget()
+        self.sidebar.pack_forget()
+        self.map_container.pack_forget()
+        self.modern_tools.pack_forget()
+        if modern:
+            self.modern_header.pack(fill='x', before=self.body)
+            self.sidebar.configure(width=300, bd=0)
+            self.sidebar.pack(side='left', fill='y', padx=(12, 8), pady=(0, 12))
+            self.modern_tools.pack(fill='x', before=self.panes)
+        else:
+            self.legacy_bar.pack(fill='x', before=self.body)
+            self.legacy_side.pack(side='left', fill='y')
+            self.sidebar.configure(width=251, bd=1)
+            self.sidebar.pack(side='right', fill='y')
+        self.map_container.pack(side='left', fill='both', expand=True,
+                                padx=(0, 12) if modern else 0, pady=(0, 12) if modern else 0)
+        self.source_label.configure(text=DATA_LABELS.get(self.mode.get(), self.mode.get()) + '  ·  ' + self.database.get())
+        self.apply_theme()
+        self.map.schedule()
+
+    def show_application_menu(self):
+        self.application_menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+
+    def add_at_center(self):
+        if self.consultation_blocked(): return
+        tile = self.map.tile_at(self.map.cx, self.map.cy)
+        if self.mode.get() != 'Référence 1.20':
+            self.status.set(self.tr('L’édition locale est disponible en référence 1.20.'))
+        elif tile is None or not tile.get('standard'):
+            self.status.set('Choisissez un point sur une carte 1.20 disponible.')
+        else:
+            self.add_note(tile, self.map.cx, self.map.cy)
+
+    def show_map_filters(self):
+        dialog = tk.Toplevel(self.root); dialog.title('Catégories affichées')
+        dialog.transient(self.root); dialog.geometry('370x480')
+        tk.Label(dialog, text='Catégories de la base active et nombre d’annotations', wraplength=340).pack(pady=8)
+        listing = tk.Listbox(dialog, selectmode='multiple', exportselection=False)
+        listing.pack(fill='both', expand=True, padx=10)
+        categories = sorted(self.model.categories.items(), key=lambda item: folded(item[1]['name']))
+        active = self.map.category_filter
+        for index, (ident, category) in enumerate(categories):
+            listing.insert('end', f"{category['name']}  ·  {self.model.category_counts[ident]}")
+            if active is None or ident in active: listing.selection_set(index)
+        buttons = tk.Frame(dialog); buttons.pack(fill='x', padx=10, pady=8)
+        tk.Button(buttons, text='Toutes', command=lambda: listing.selection_set(0, 'end')).pack(side='left')
+        tk.Button(buttons, text='Aucune', command=lambda: listing.selection_clear(0, 'end')).pack(side='left', padx=6)
+        def apply():
+            self.map.category_filter = {categories[i][0] for i in listing.curselection()}
+            self.map.schedule(); dialog.destroy()
+        tk.Button(buttons, text='Appliquer', command=apply).pack(side='right')
+        self.apply_ui_language(); self.apply_theme()
+
+    def show_preferences(self):
+        return self.show_reference_preferences()
+
+    def center_dialog(self, dialog):
+        dialog.update_idletasks()
+        requested = getattr(dialog, '_wcf_requested_size', (dialog.winfo_reqwidth(), dialog.winfo_reqheight()))
+        width = max(dialog.winfo_width(), requested[0])
+        height = max(dialog.winfo_height(), requested[1])
+        x = max(0, min(self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2, dialog.winfo_screenwidth() - width - 12))
+        y = max(0, min(self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2, dialog.winfo_screenheight() - height - 48))
+        dialog.geometry(f'+{x}+{y}')
+
+    def backup_profile(self):
+        from tools.clone_profile import backup_profile
+        path = filedialog.asksaveasfilename(parent=self.root, title='Sauvegarder le profil', defaultextension='.wcfbackup',
+                                           filetypes=[('Profil WoWCarto Forever', '*.wcfbackup')])
+        if path:
+            try:
+                self.capture_session()
+                result = backup_profile(self.store, self.preferences, path)
+                self.status.set(f"Profil sauvegardé : {result['notes']} annotations ; SHA-256 {result['sha256']}")
+            except (OSError, ValueError) as error:
+                messagebox.showerror('Sauvegarde', str(error), parent=self.root)
+
+    def restore_profile(self):
+        if self.consultation_blocked(): return
+        from tools.clone_profile import restore_profile
+        path = filedialog.askopenfilename(parent=self.root, title='Restaurer une sauvegarde',
+                                          filetypes=[('Profil WoWCarto Forever', '*.wcfbackup')])
+        if path:
+            try:
+                result = restore_profile(self.store, path)
+                self.preferences.update(result['preferences'])
+                self.profile_restore_pending = True
+                self.save_preferences()
+                self.refresh_local_annotations()
+                messagebox.showinfo('Restauration', f"{result['added']} annotations ajoutées, {result['skipped']} identiques.\nLes préférences seront appliquées au prochain lancement.", parent=self.root)
+            except (OSError, ValueError) as error:
+                messagebox.showerror('Restauration', str(error), parent=self.root)
+
+    def capture_session(self):
+        self.preferences.update(map_mode=self.mode.get(), interface=self.interface.get(),
+                                search_history=getattr(self, 'search_history', [])[:20])
+        self.preferences['session'] = dict(mode=self.mode.get(), database=self.database.get(), group=self.group,
+            region=self.region_native_ids.get(self.shown_region), center=[self.map.cx, self.map.cy], scale=self.map.scale,
+            selected=self.map.selected, query=self.query.get(), options=getattr(self, 'search_options', {}),
+            region_filter=self.region_filter.get(), continent=self.continent_filter.get(),
+            legend=self.map.legend, dim=self.map.dim, high=self.map.high, results_offset=self.results_offset,
+            geometry=self.root.geometry(), categories=self.map.category_filter,
+            annotations_visible=self.map.annotations_visible, paths_visible=self.map.paths_visible, color_by_level=self.map.color_by_level)
+
+    def restore_session(self):
+        session = self.preferences.get('session', {})
+        self.search_history = self.preferences.get('search_history', [])[:20]
+        if not isinstance(session, dict) or session.get('mode') != self.mode.get() or session.get('database') != self.database.get():
+            return False
+        center, scale = session.get('center'), session.get('scale')
+        if (not isinstance(center, list) or len(center) != 2 or
+            any(type(v) not in (int, float) or not math.isfinite(v) for v in center) or
+            type(scale) not in (int, float) or not math.isfinite(scale) or not .025 <= scale <= 8):
+            return False
+        region = next((iid for iid, ident in self.region_native_ids.items() if ident == session.get('region')), None)
+        if region:
+            self.regions.selection_set(region); self.select_group()
+        elif session.get('group') in self.map_tiles_by_group:
+            self.group = self.shown_group = session['group']
+            self.regions.selection_remove(*self.regions.selection())
+            self.tiles = self.map_tiles_by_group[self.group]
+            records = self.forever_by_group if self.mode.get() == 'Modern' else self.model.by_group
+            self.map.set_scene(self.tiles, records.get(self.group, []), fit=False)
+            self.shown_region = None; self.map.region_outline = []
+            self.map.region_markers = [dict(iid=iid, wx=point[0], wy=point[1])
+                                       for iid, point in self.region_centers.items()
+                                       if self.groups[iid][0] == self.group]
+        else:
+            return False
+        self.map.cx, self.map.cy = center
+        self.map.scale = scale
+        for name in ('legend', 'dim', 'high', 'annotations_visible', 'paths_visible', 'color_by_level'):
+            if type(session.get(name)) is bool: setattr(self.map, name, session[name])
+        categories = session.get('categories')
+        if isinstance(categories, list) and all(type(i) is int for i in categories):
+            self.map.category_filter = set(categories)
+        self.query.set(str(session.get('query', ''))[:1000])
+        options = session.get('options', {})
+        allowed = {'name', 'comment', 'categories', 'group', 'minimum', 'maximum', 'properties', 'continents', 'regions', 'local_only'}
+        if isinstance(options, dict) and not set(options) - allowed:
+            self.search_options = options
+        selected = self.forever_by_key if self.mode.get() == 'Modern' else self.model.by_key
+        row = selected.get(session.get('selected'))
+        if row:
+            self.map.selected = row['key']; self.select_record(row)
+        self.region_filter.set(str(session.get('region_filter', ''))[:1000])
+        if session.get('continent') in self.continent_box.cget('values'):
+            self.continent_filter.set(session['continent']); self.filter_regions()
+        geometry = session.get('geometry', '')
+        if isinstance(geometry, str) and re.fullmatch(r'\d{3,5}x\d{3,5}[+-]\d+[+-]\d+', geometry):
+            self.root.geometry(geometry)
+        self.map.schedule()
+        self.refresh_routes()
+        return True
 
     def load_interface_icons(self):
         self.toolbar_icons = {}
@@ -254,7 +528,8 @@ class Application:
             with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=self.preferences_path.parent,
                                              prefix='.wcf-preferences-', suffix='.tmp', delete=False) as stream:
                 temp_path = Path(stream.name)
-                json.dump(self.preferences, stream, ensure_ascii=False, indent=2)
+                json.dump(self.preferences, stream, ensure_ascii=False, indent=2,
+                          default=lambda value: sorted(value) if isinstance(value, set) else str(value))
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temp_path, self.preferences_path)
@@ -273,8 +548,7 @@ class Application:
         self.preferences['ui_language'] = self.ui_language.get()
         self.save_preferences()
         self.apply_ui_language()
-        self.root.title(self.tr('WoWCarto Forever — Modern : base historique 1.20' if self.mode.get() == 'Modern'
-                                else 'WoWCarto Forever — client intégré en validation'))
+        self.update_title()
         values = self.continent_box.cget('values')
         if values:
             self.continent_box['values'] = (('All' if self.ui_language.get() == 'en' else 'Tous'), *values[1:])
@@ -286,6 +560,14 @@ class Application:
 
     def tr(self, text):
         return translate(text, self.ui_language.get())
+
+    def update_title(self):
+        mode = self.mode.get()
+        label = DATA_LABELS.get(mode, mode)
+        if mode == 'Modern':
+            selected = next((item for item in self.model.sets if item.get('mode') == mode), {})
+            label = selected.get('title') or label
+        self.root.title(f'WoWCarto Forever {VERSION} — {self.interface.get()} — {label}')
 
     def apply_ui_language(self):
         """Translate interface controls while leaving user and map data untouched."""
@@ -317,7 +599,10 @@ class Application:
             for child in widget.winfo_children():
                 visit(child)
         visit(self.root)
-        self.flag.configure(text='🇬🇧' if language == 'en' else '🇫🇷')
+        if hasattr(self, 'database_flag_icon'):
+            self.flag.configure(image=self.database_flag_icon, text='', width=20, height=13)
+        else:
+            self.flag.configure(text='EN' if language == 'en' else 'FR')
 
     def change_database(self):
         self.change_mode()
@@ -325,9 +610,16 @@ class Application:
         self.save_preferences()
 
     def edit_mode_changed(self):
+        if self.consultation_blocked():
+            self.edit_enabled.set(False)
+            return
+        if self.edit_enabled.get():
+            self.edit_database.set(self.database.get())
+            self.preferences['edit_database'] = self.database.get()
         self.status.set(translate('Mode édition activé.' if self.edit_enabled.get() else 'Mode édition désactivé.', self.ui_language.get()))
 
     def toggle_edit_mode(self):
+        if self.consultation_blocked(): return
         self.edit_enabled.set(not self.edit_enabled.get())
         self.edit_mode_changed()
 
@@ -336,7 +628,15 @@ class Application:
         self.save_preferences()
         self.status.set(self.tr('Base autorisée pour l’édition : ') + self.edit_database.get())
 
+    def consultation_blocked(self):
+        if getattr(self, 'consultation_only', False):
+            self.status.set('Mode consultation : modification et partage désactivés.')
+            return True
+        return False
+
     def can_edit(self, allow_modern=False):
+        if self.consultation_blocked():
+            return False
         if self.mode.get() != 'Référence 1.20' and not (allow_modern and self.mode.get() == 'Modern'):
             self.status.set(translate('L’édition locale est disponible en référence 1.20.', self.ui_language.get()))
             return False
@@ -351,6 +651,7 @@ class Application:
     def apply_theme(self):
         """Switch existing controls without altering the map or source resources."""
         dark = self.dark_theme.get()
+        modern = hasattr(self, 'interface') and self.interface.get() == 'Modern'
         palette = {'background': '#252930', 'foreground': '#edf0f4',
                    'activebackground': '#414a56', 'activeforeground': '#ffffff',
                    'selectbackground': '#344d67', 'selectforeground': '#ffffff',
@@ -367,7 +668,10 @@ class Application:
                     try:
                         if key not in original:
                             original[key] = widget.cget(key)
-                        widget.configure(**{key: color if dark else original[key]})
+                        light = ('#fffdf8' if key == 'background' and modern and isinstance(widget, tk.Entry) else
+                                 '#f2eee4' if key == 'background' and modern else
+                                 '#233344' if key == 'foreground' and modern else original[key])
+                        widget.configure(**{key: color if dark else light})
                     except tk.TclError:
                         pass
             for child in widget.winfo_children():
@@ -379,6 +683,14 @@ class Application:
         style.theme_use('clam' if dark else self._original_ttk_theme)
         style.configure('Original.Treeview', background='#252930' if dark else '#808080',
                         fieldbackground='#252930' if dark else '#808080', foreground='white')
+        if modern:
+            style.configure('Original.Treeview', background='#252930' if dark else '#f9f7f1',
+                            fieldbackground='#252930' if dark else '#f9f7f1',
+                            foreground='#edf0f4' if dark else '#233344')
+        style.configure('Original.Treeview', rowheight=26 if modern else 18,
+                        font=('Segoe UI', 10) if modern else ('MS Sans Serif', 8))
+        if hasattr(self, 'brand'):
+            self.brand.configure(foreground='#dfbf78' if dark else '#80601e')
         style.configure('Treeview', background='#252930' if dark else 'white',
                         fieldbackground='#252930' if dark else 'white',
                         foreground='#edf0f4' if dark else 'black')
@@ -396,23 +708,41 @@ class Application:
         hot_icon = self.toolbar_hot_icons.get(index)
         button = tk.Button(parent, image=icon, text='' if icon else hint[:1], command=command,
                            width=22 if icon else 2, height=22 if icon else 1,
-                           bd=0, relief='flat', takefocus=False)
+                           bd=0, relief='flat', takefocus=True)
+        if not hasattr(self, 'icon_buttons'): self.icon_buttons = {}
+        self.icon_buttons[index] = button
+        tooltip = [None, None]
+        def dismiss():
+            if tooltip[0] is not None:
+                try: button.after_cancel(tooltip[0])
+                except tk.TclError: pass
+                tooltip[0] = None
+            if tooltip[1] is not None:
+                try: tooltip[1].destroy()
+                except tk.TclError: pass
+                tooltip[1] = None
+        def reveal():
+            tooltip[0] = None
+            window = tk.Toplevel(button); window.overrideredirect(True)
+            window.geometry(f'+{min(button.winfo_rootx(), button.winfo_screenwidth() - 300)}+{button.winfo_rooty() + button.winfo_height() + 3}')
+            tk.Label(window, text=self.tr(hint), bg='#fff7d1', fg='black', bd=1, relief='solid', padx=5, pady=3).pack()
+            tooltip[1] = window
         def enter(_):
             self.status.set(translate(hint, self.ui_language.get()))
             if hot_icon:
                 button.configure(image=hot_icon)
+            dismiss(); tooltip[0] = button.after(600, reveal)
         def leave(_):
+            dismiss()
             if icon:
                 button.configure(image=icon)
         button.bind('<Enter>', enter)
         button.bind('<Leave>', leave)
+        button.bind('<ButtonPress-1>', lambda e: dismiss())
         return button
 
     def show_pane(self, name):
-        self.region_pane.pack(fill='both', expand=True)
-        if name in ('results', 'details'):
-            window = self.result_window if name == 'results' else self.detail_window
-            window.deiconify(); window.lift()
+        return self.show_reference_pane(name)
 
     def filter_regions(self, *_):
         if not hasattr(self, 'regions'):
@@ -442,118 +772,82 @@ class Application:
         if hasattr(self, 'map'):
             self.map.zoom_to(.025 * (320 ** (float(value) / 100)))
 
-    def not_implemented(self):
-        self.status.set(self.tr('Fonction non encore intégrée dans ce client de validation.'))
-
     def show_mode_info(self):
-        messagebox.showinfo('WoWCarto Forever', self.label.get(), parent=self.root)
+        messagebox.showinfo('WoWCarto Forever ' + VERSION, self.label.get(), parent=self.root)
 
     def load_category_icons(self):
         self.map.icons = {}
-        strip = Image.open(io.BytesIO(self.model.db['icons_bmp'])).convert('RGBA')
+        self.editor_icons = {}
+        self.category_icons = {}
+        self.map.categories = self.model.categories
+        flag = Image.open(io.BytesIO(self.model.db['language_icon_bmp'])).convert('RGBA')
+        self.database_flag_icon = ImageTk.PhotoImage(flag)
+        self.flag.configure(image=self.database_flag_icon, text='', width=20, height=13)
+        strip = Image.open(io.BytesIO(self.model.db['region_icons_bmp'])).convert('RGBA')
         mask = strip.getpixel((0, 0))[:3]
         for ident, category in self.model.categories.items():
-            index = category.get('icon_index', -1)
-            if 0 <= index < strip.width // 16:
-                icon = strip.crop((index * 16, 0, (index + 1) * 16, 16))
+            index = category.get('map_icon_index', -1)
+            if 0 <= index < strip.width // 11:
+                icon = strip.crop((index * 11, 0, (index + 1) * 11, 11))
                 icon.putdata([(r, g, b, 0 if (r, g, b) == mask else 255) for r, g, b, a in icon.getdata()])
+                self.editor_icons[ident] = ImageTk.PhotoImage(icon)
+                icon = icon.resize((11 * self.map.marker_scale, 11 * self.map.marker_scale), Image.Resampling.NEAREST)
                 self.map.icons[ident] = ImageTk.PhotoImage(icon)
         self.map.region_icon = self.map.icons.get(18)
+        # The region tree keeps the original 16x16 UI icon, independently of
+        # the map's 11x11 glyphs.
+        ui_strip = Image.open(io.BytesIO(self.model.db['icons_bmp'])).convert('RGBA')
+        ui_mask = ui_strip.getpixel((0, 0))[:3]
+        for ident, category in self.model.categories.items():
+            index = category.get('icon_index', -1)
+            if 0 <= index < ui_strip.width // 16:
+                icon = ui_strip.crop((index * 16, 0, (index + 1) * 16, 16))
+                icon.putdata([(r, g, b, 0 if (r, g, b) == ui_mask else 255) for r, g, b, a in icon.getdata()])
+                self.category_icons[ident] = ImageTk.PhotoImage(icon)
+        index = self.model.categories.get(18, {}).get('icon_index', -1)
+        self.region_tree_icon = None
+        if 0 <= index < ui_strip.width // 16:
+            icon = ui_strip.crop((index * 16, 0, (index + 1) * 16, 16))
+            mask = ui_strip.getpixel((0, 0))[:3]
+            icon.putdata([(r, g, b, 0 if (r, g, b) == mask else 255) for r, g, b, a in icon.getdata()])
+            self.region_tree_icon = ImageTk.PhotoImage(icon)
 
-    def show_search(self):
+    def update_player_level(self, *, normalize=False):
+        try:
+            level = max(1, min(85, int(self.level.get())))
+        except ValueError:
+            level = self.map.player_level
+        if normalize and self.level.get() != str(level):
+            self.level.set(str(level))
+        if level != self.map.player_level:
+            self.map.player_level = level
+            self.map.schedule()
+        self.preferences['player_level'] = level
+
+    def show_search(self, *, clear=False, current=False):
         if self.mode.get() not in ('Référence 1.20', 'Modern') and not (self.mode.get() == 'Legacy' and self.model.map_set.get('id') == 'legacy108'):
             self.status.set(self.tr('Aucune base d’annotations calibrée pour ce mode.'))
             return
-        dialog = tk.Toplevel(self.root)
-        dialog.title('Recherche')
-        x = max(0, (dialog.winfo_screenwidth() - 540) // 2)
-        y = max(0, (dialog.winfo_screenheight() - 450) // 2)
-        dialog.geometry(f'540x450+{x}+{y}')
-        dialog.transient(self.root)
-        left = tk.Frame(dialog, padx=5, pady=5); left.pack(side='left', fill='both', expand=True)
-        right = tk.Frame(dialog, padx=5, pady=5); right.pack(side='right', fill='both', expand=True)
-        options = tk.Frame(left); options.pack(fill='x')
-        tk.Label(options, text='Chercher dans:').pack(side='left')
-        names = tk.BooleanVar(value=True); comments = tk.BooleanVar(value=False)
-        tk.Checkbutton(options, text='Nom', variable=names).pack(side='left')
-        tk.Checkbutton(options, text='Commentaires', variable=comments).pack(side='left')
-        entry = tk.Entry(left, textvariable=self.query); entry.pack(fill='x', pady=3); entry.focus_set()
-        levelrow = tk.Frame(left); levelrow.pack(fill='x')
-        use_level = tk.BooleanVar(value=False); low = tk.StringVar(value='5'); high = tk.StringVar(value='5')
-        tk.Checkbutton(levelrow, text='Niveau [min/max]', variable=use_level).pack(side='left')
-        tk.Entry(levelrow, textvariable=low, width=5).pack(side='left', padx=3)
-        tk.Entry(levelrow, textvariable=high, width=5).pack(side='left')
-        tk.Label(left, text='Filtre').pack(anchor='w')
-        filter_text = tk.StringVar(); filter_entry = tk.Entry(left, textvariable=filter_text); filter_entry.pack(fill='x')
-        category_tree = ttk.Treeview(left, show='tree', selectmode='extended', height=11)
-        category_tree.pack(fill='both', expand=True, pady=4)
-        roots = {kind: category_tree.insert('', 'end', text=self.tr(title), open=False) for kind,title in
-                 (('category','Catégories'),('property','Tags'),('continent','Continents'),('region','Régions'))}
-        local_iid = category_tree.insert('', 'end', text=self.tr('Ajouts locaux'))
-        category_map, property_map, continent_map, region_map = {}, {}, {}, {}
-        geographic = []
-        for region in self.model.geographic_regions():
-            outline = decode_region_outline(region)
-            if outline: geographic.append((region['name'],region['group_id'],outline))
-        def fill_categories(*_):
-            for root in roots.values(): category_tree.delete(*category_tree.get_children(root))
-            for mapping in (category_map, property_map, continent_map, region_map): mapping.clear()
-            needle = folded(filter_text.get())
-            for ident, category in sorted(self.model.categories.items(), key=lambda item: item[1]['name']):
-                if needle in folded(category['name']):
-                    iid = category_tree.insert(roots['category'], 'end', text=category['name']); category_map[iid] = ident
-            for flag in sorted(self.model.db['flags'].values(), key=lambda item: item['name']):
-                if flag['name'] and needle in folded(flag['name']):
-                    iid = category_tree.insert(roots['property'], 'end', text=flag['name']); property_map[iid] = flag['name']
-            for continent in sorted(self.model.db['continents'], key=lambda item: item['name']):
-                if needle in folded(continent['name']):
-                    iid = category_tree.insert(roots['continent'], 'end', text=continent['name']); continent_map[iid] = continent['id']
-            for name, group, outline in geographic:
-                if needle in folded(name):
-                    iid = category_tree.insert(roots['region'], 'end', text=name); region_map[iid] = (group,outline)
-        fill_categories(); filter_text.trace_add('write', fill_categories)
-        tk.Label(right, text='Paramètres de recherche actuels').pack(anchor='w')
-        summary = tk.Text(right, height=5, width=30); summary.pack(fill='x'); summary.insert('1.0', translate('Sélectionnez les critères, puis Chercher.', self.ui_language.get()))
-        tk.Label(right, text='Historique des recherches').pack(anchor='w', pady=(5, 0))
-        history = tk.Listbox(right); history.pack(fill='both', expand=True)
-        for value in getattr(self, 'search_history', []): history.insert('end', value)
-        buttons = tk.Frame(right); buttons.pack(fill='x')
-        def run():
-            if not names.get() and not comments.get():
-                messagebox.showerror(self.tr('Recherche'), self.tr('Sélectionner Nom ou Commentaires.'), parent=dialog); return
-            try:
-                minimum, maximum = (int(low.get()), int(high.get())) if use_level.get() else (None, None)
-            except ValueError:
-                messagebox.showerror(self.tr('Recherche'), self.tr('Les niveaux doivent être des nombres.'), parent=dialog); return
-            chosen = category_tree.selection()
-            categories = {category_map[x] for x in chosen if x in category_map} or None
-            properties = [property_map[x] for x in chosen if x in property_map] or None
-            continents = {continent_map[x] for x in chosen if x in continent_map} or None
-            regions = [region_map[x] for x in chosen if x in region_map] or None
-            self.search_options = dict(name=names.get(), comment=comments.get(), categories=categories, minimum=minimum,
-                                       maximum=maximum, properties=properties, continents=continents, regions=regions,
-                                       local_only=local_iid in chosen)
-            self.search_history = [self.query.get()] + getattr(self, 'search_history', [])[:19]
-            self.search(); dialog.destroy()
-        tk.Button(buttons, text='Annuler', command=dialog.destroy, width=9).pack(side='right', padx=3)
-        tk.Button(buttons, text='Chercher', command=run, width=9).pack(side='right')
-        tk.Button(left, text='Initialiser les paramètres', command=lambda: self.query.set('')).pack(side='left')
-        tk.Button(left, text='Options', command=self.not_implemented).pack(side='right')
-        self.apply_ui_language()
-        if self.dark_theme.get():
-            self.apply_theme()
-        dialog.bind('<Return>', lambda event: run())
+        return SearchDialog(self, clear=clear, current=current)
 
     def close(self):
+        if not getattr(self, 'profile_restore_pending', False):
+            self.capture_session()
+        self.save_preferences()
+        self.map.destroy()
+        for pending in self.root.tk.call('after', 'info'):
+            self.root.after_cancel(pending)
         if self.model.index:
             self.model.index.close()
         self.store.close()
         self.root.destroy()
 
     def change_mode(self):
+        self.map.one_to_one_scale = 2. if self.mode.get() == 'Modern' else 4.
+        self.map.route_editing = False
+        if hasattr(self, 'master_tree'): self.invalidate_master()
         self.show_pane('regions')
-        self.root.title(self.tr('WoWCarto Forever — Modern : base historique 1.20' if self.mode.get() == 'Modern'
-                                else 'WoWCarto Forever — client intégré en validation'))
+        self.update_title()
         for iid in getattr(self, 'region_ids', []):
             if self.regions.exists(iid): self.regions.delete(iid)
         self.region_ids = []
@@ -571,6 +865,7 @@ class Application:
         self.previous_results.configure(state='disabled'); self.next_results.configure(state='disabled')
         self.detail.delete('1.0', 'end')
         self.query.set('')
+        self.search_options = {}
         self.groups, self.results, self.selection = {}, {}, None
         self.shown_group = None
         self.shown_region = None
@@ -591,7 +886,7 @@ class Application:
             for row in self.model.geographic_regions():
                 tiles = tiles_by_group.get(row['group_id'])
                 if tiles:
-                    iid = self.regions.insert('', 'end', text=row['name'], image=self.map.region_icon or '')
+                    iid = self.regions.insert('', 'end', text=row['name'], image=self.region_tree_icon or '')
                     self.region_native_ids[iid] = row['id']
                     self.groups[iid] = (row['group_id'], tiles)
                     self.region_centers[iid] = (row['wx'], row['wy'])
@@ -648,7 +943,7 @@ class Application:
                 tiles = modern_groups.get(name, [])
                 if not tiles:
                     continue
-                iid = self.regions.insert('', 'end', text=row['name'], image=self.map.region_icon or '')
+                iid = self.regions.insert('', 'end', text=row['name'], image=self.region_tree_icon or '')
                 self.region_native_ids[iid] = row['id']
                 self.groups[iid] = (name, tiles)
                 self.region_continents[iid] = name
@@ -675,14 +970,23 @@ class Application:
         self.region_ids = list(entries)
         self.continent_box['values'] = (('All' if self.ui_language.get() == 'en' else 'Tous'), *sorted(set(self.region_continents.values())))
         if entries:
-            self.regions.selection_set(entries[0])
+            default = next((iid for iid in entries if self.regions.item(iid, 'text') in
+                            ("Forêt d'Elwynn", 'Forêt d’Elwynn', 'Elwynn Forest')), entries[0])
+            self.regions.selection_set(default)
             self.select_group()
+        self.preferences['map_mode'] = self.mode.get()
+        self.save_preferences()
+        if hasattr(self, 'source_label'):
+            self.source_label.configure(text=DATA_LABELS.get(self.mode.get(), self.mode.get()) + '  ·  ' + self.database.get())
+        self.update_database_info()
+        self.refresh_routes()
 
     def select_group(self, event=None):
         selected = self.regions.selection()
         if not selected or selected[0] not in self.groups:
             return
         iid = selected[0]
+        self.map.route_editing = False
         self.group, self.tiles = self.groups[iid]
         if self.shown_group != self.group:
             self.shown_group = self.group
@@ -715,6 +1019,7 @@ class Application:
             elif iid in self.region_centers:
                 wx, wy = self.region_centers[iid]
                 self.map.center(wx, wy, .8)
+        self.refresh_routes()
 
     def select_region_marker(self, iid):
         if iid not in self.groups:
@@ -773,7 +1078,7 @@ class Application:
             return
         query = self.query.get().strip()
         options = getattr(self, 'search_options', {'comment': True})
-        if not query and not any(options.get(key) is not None for key in ('categories', 'minimum', 'maximum', 'properties', 'continents', 'regions')) and not options.get('local_only'):
+        if not query and not has_filter(options):
             self.status.set(self.tr('Saisir un nom ou un texte à rechercher.'))
             return
         matches = self.model.search(query, **options)
@@ -789,7 +1094,7 @@ class Application:
         total = len(self.search_matches)
         end = min(self.results_offset + 500, total)
         for row in self.search_matches[self.results_offset:end]:
-            iid = self.results_tree.insert('', 'end', text=row['name'] + ' — ' + row['region'])
+            iid = self.results_tree.insert('', 'end', text=row['name'] + ' — ' + row['region'], image=getattr(self, 'category_icons', {}).get(row.get('category'), ''))
             self.results[iid] = row
         first = self.results_offset + 1 if total else 0
         self.results_page.set(f'{first}–{end} / {total}')
@@ -805,26 +1110,8 @@ class Application:
 
     def select_result(self, event=None):
         chosen = self.results_tree.selection()
-        if not chosen or chosen[0] not in self.results:
-            return
-        row = self.results[chosen[0]]
-        tiles = self.map_tiles_by_group.get(row['group_id'])
-        if tiles:
-            self.group, self.tiles = row['group_id'], tiles
-            if self.shown_group != self.group:
-                self.shown_group = self.group
-                records = (self.forever_by_group.get(self.group, []) if self.mode.get() == 'Modern'
-                           else self.model.by_group.get(self.group, []))
-                self.map.set_scene(tiles, records)
-            self.shown_region = None
-            self.map.region_outline = []
-            self.map.region_markers = [dict(iid=key, wx=point[0], wy=point[1])
-                                       for key, point in self.region_centers.items()
-                                       if self.groups[key][0] == self.group]
-            self.regions.selection_remove(*self.regions.selection())
-            self.map.selected = row['key']
-            self.map.center(row['wx'], row['wy'], .2 if self.mode.get() == 'Modern' else .8)
-            self.select_record(row)
+        if chosen and chosen[0] in self.results:
+            self.focus_record(self.results[chosen[0]])
 
     def show_legacy_plans(self):
         if self.mode.get() != 'Legacy':
@@ -861,9 +1148,24 @@ class Application:
             provenance = '\nSource : base historique 1.20 ; présence et position non vérifiées dans Forever.\n' if row.get('historical_unverified') else ''
             level_label = 'Niveau'
         self.detail.insert('1.0', f"{row['name']}\n{category} · {row['region']}\n{level_label} {row.get('min_level', 0)}–{row.get('max_level', 0)}\n{provenance}\n{row.get('comment', '')}")
+        self.update_database_info()
 
     def context(self, event, record, tile, wx, wy):
         menu = tk.Menu(self.root, tearoff=False)
+        if record:
+            self.map.selected = record['key']; self.select_record(record); self.map.schedule()
+            menu.add_command(label='Copier l’annotation', accelerator='Ctrl+C', command=self.copy_annotation)
+            if self.mode.get() == 'Référence 1.20':
+                menu.add_command(label='Couper l’annotation', accelerator='Ctrl+X', command=lambda: self.copy_annotation(cut=True))
+        if tile and self.mode.get() == 'Référence 1.20':
+            menu.add_command(label='Coller une annotation ici', accelerator='Ctrl+V', command=lambda: self.paste_annotation((tile, wx, wy)))
+            menu.add_command(label='Créer un chemin personnel ici', command=lambda: self.start_route(wx, wy))
+            menu.add_command(label='Options du dernier chemin…', command=self.route_options)
+            if self.map.route_editing:
+                menu.add_command(label='Annuler le dernier point', command=self.undo_route_point)
+                menu.add_command(label='Terminer le chemin', command=self.finish_route)
+        menu.add_command(label='Rechercher dans la région', accelerator='Ctrl+T', command=lambda: self.show_search(current=True))
+        menu.add_separator()
         if self.mode.get() == 'Référence 1.20' and tile:
             menu.add_command(label='Ajouter une annotation…', command=lambda: self.add_note(tile, wx, wy))
         if record and self.mode.get() == 'Référence 1.20':
@@ -890,18 +1192,35 @@ class Application:
             self.apply_theme()
         menu.tk_popup(event.x_root, event.y_root)
 
+    def map_edit(self, record, tile, wx, wy):
+        if record: self.edit_note(record)
+        elif tile: self.add_note(tile, wx, wy)
+
+    def native_path(self, row):
+        original = self.model.by_key.get(row['key'], row) if self.mode.get() == 'Modern' else row
+        tile = getattr(self.model, 'tiles', {}).get(original.get('map_id'))
+        path = decode_native_path(original, tile)
+        if path is not None and self.mode.get() == 'Modern':
+            from dataclasses import replace
+            if original.get('group_id') in FOREVER_REGISTRATION:
+                path = replace(path, points=tuple(project_forever(original['group_id'], point) for point in path.points))
+            else: return None
+        return path
+
     def add_note(self, tile, wx, wy):
         if not self.can_edit():
             return
         initial = dict(name='', map_id=tile['id'], x=max(0, min(65535, int((wx-tile['x'])*256))),
                        y=max(0, min(65535, int((wy-tile['y'])*256))), category=37)
         data = AnnotationDialog(self.root, initial, self.model.categories, self.tr,
-                                self.apply_theme if self.dark_theme.get() else None).result
+                                self.apply_theme if self.dark_theme.get() else None,
+                                category_icons=self.editor_icons, properties=self.model.db['flags'], player_level=self.map.player_level).result
         if data is None: return
         data['source_ref'] = self.model.personal_prefix + str(uuid.uuid4())
         try:
-            self.store.add_note(data)
+            note_id = self.store.add_note(data)
             self.refresh_local_annotations()
+            self.select_saved_note(note_id)
             self.status.set(self.tr('Annotation locale enregistrée.'))
         except ValueError as error:
             messagebox.showerror('Annotation', str(error), parent=self.root)
@@ -910,23 +1229,53 @@ class Application:
         if not self.can_edit():
             return
         data = AnnotationDialog(self.root, row, self.model.categories, self.tr,
-                                self.apply_theme if self.dark_theme.get() else None).result
+                                self.apply_theme if self.dark_theme.get() else None,
+                                category_icons=self.editor_icons, properties=self.model.db['flags'], player_level=self.map.player_level).result
         if data is None: return
         try:
             if row.get('note_id'):
                 self.store.update_note(row['note_id'], data, expected_revision=row.get('revision'))
             else:
-                self.store.set_override(row['key'], data)
+                row = self.store.set_override(row['key'], data)
             self.refresh_local_annotations()
+            self.select_saved_note(row.get('note_id') or row['id'])
             self.status.set(self.tr('Annotation locale enregistrée.'))
         except (ValueError, KeyError) as error:
             messagebox.showerror(self.tr('Annotation locale'), str(error), parent=self.root)
 
+    def select_saved_note(self, note_id):
+        row = self.model.by_key.get('note:' + note_id)
+        if row:
+            self.map.selected = row['key']; self.select_record(row); self.map.schedule()
+
     def refresh_local_annotations(self):
+        self.invalidate_master()
+        selected = self.map.selected
         self.model.rebuild()
-        records = [r for r in self.model.by_group.get(getattr(self, 'group', None), []) if r['category'] != 18]
+        if self.mode.get() == 'Modern':
+            self.forever_by_key = {}; self.forever_by_group = {}
+            for row in project_historical_records(self.model.annotations):
+                self.forever_by_key[row['key']] = row
+                self.forever_by_group.setdefault(row['group_id'], []).append(row)
+            records = self.forever_by_group.get(getattr(self, 'group', None), [])
+        else:
+            records = [r for r in self.model.by_group.get(getattr(self, 'group', None), []) if r['category'] != 18]
         if self.tiles:
             self.map.set_scene(self.tiles, records, fit=False)
+            row = next((r for r in records if r['key'] == selected), None)
+            if row:
+                self.map.selected = selected
+                self.select_record(row)
+            elif getattr(self, 'selection', None) and self.selection.get('key') == selected:
+                self.selection = None
+                self.detail.delete('1.0', 'end')
+        if getattr(self, 'search_matches', []):
+            matches = self.model.search(self.query.get().strip(), **getattr(self, 'search_options', {'comment': True}))
+            if self.mode.get() == 'Modern':
+                matches = [self.forever_by_key[r['key']] for r in matches if r['key'] in self.forever_by_key]
+            self.search_matches = matches
+            self.results_offset = min(self.results_offset, max(0, ((len(matches) - 1) // 500) * 500))
+            self.render_results()
 
     def hide_local_note(self, row):
         if not self.can_edit() or not row.get('note_id'): return
@@ -979,6 +1328,7 @@ class Application:
                 messagebox.showerror('Export', str(error), parent=self.root)
 
     def correct_community(self, row):
+        if self.network_disabled(): return
         if not self.can_edit() or self.database.get() != 'Francais':
             return
         edited = AnnotationDialog(self.root, row, self.model.categories, self.tr,
@@ -1014,6 +1364,7 @@ class Application:
         threading.Thread(target=work, daemon=True).start()
 
     def share_personal_note(self, row):
+        if self.network_disabled(): return
         if not self.can_edit() or self.database.get() != 'Francais': return
         try:
             data = personal_addition(row)
@@ -1042,6 +1393,7 @@ class Application:
         threading.Thread(target=work, daemon=True).start()
 
     def correct_reference(self, row):
+        if self.network_disabled(): return
         if not self.can_edit(allow_modern=True): return
         locale = self.database.get()
         sha = self.model.db.get('source_sha256')
@@ -1071,18 +1423,19 @@ class Application:
         threading.Thread(target=work, daemon=True).start()
 
     def import_notes(self):
+        if self.consultation_blocked(): return
         path = filedialog.askopenfilename(title=self.tr('Importer mes annotations'), filetypes=[('JSON', '*.json')])
         if path:
             try:
                 result = self.store.import_notes(path)
-                self.model.rebuild()
-                self.shown_group = None
-                self.select_group()
+                self.refresh_local_annotations()
                 self.status.set(str(result))
             except (OSError, ValueError) as error:
                 messagebox.showerror('Import', str(error), parent=self.root)
 
     def share_additions(self):
+        if self.consultation_blocked(): return
+        if self.network_disabled(): return
         if self.mode.get() != 'Référence 1.20' or self.database.get() != 'Francais':
             self.status.set(self.tr('Le partage est limité aux ajouts de la base française 1.20.'))
             return
@@ -1118,7 +1471,14 @@ class Application:
                 self.root.after(0, lambda message=str(error): self.status.set(self.tr('Partage indisponible : ') + self.tr(message)))
         threading.Thread(target=work, daemon=True).start()
 
+    def network_disabled(self):
+        if getattr(self, 'offline', False):
+            self.status.set('Mode hors ligne : les données locales et le cache sont conservés.')
+            return True
+        return False
+
     def sync(self):
+        if self.network_disabled(): return
         if self.mode.get() not in ('Référence 1.20', 'Modern') or self.database.get() not in SOURCES:
             self.status.set(self.tr('La réception communautaire est limitée aux bases FR et EN 1.20.'))
             return
@@ -1185,12 +1545,34 @@ def main():
     parser = argparse.ArgumentParser()
     home = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1]
     parser.add_argument('--data', type=Path, default=home / 'data')
+    parser.add_argument('--version', action='version', version=VERSION)
+    parser.add_argument('--offline', action='store_true', help='Désactiver les actions réseau et conserver les caches locaux.')
+    parser.add_argument('--consultation', action='store_true', help='Désactiver les modifications et les envois.')
     parser.add_argument('--state', type=Path, default=Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'WoWCartoForeverClone' / 'annotations.sqlite3')
     args = parser.parse_args()
-    app = Application(args.data, args.state)
-    messagebox.showinfo(app.tr('À propos des données'),
-                        app.tr('Les bases FR et EN proviennent de WoWCartographe 1.20. Elles peuvent contenir des erreurs ou des informations anciennes. En mode Modern, leur présence et leur position dans WoW Forever ne sont pas toutes vérifiées. La communauté pourra les corriger au fur et à mesure.'),
-                        parent=app.root)
+    if not any(value == '--data' or value.startswith('--data=') for value in sys.argv[1:]):
+        try:
+            saved = json.loads(args.state.with_name('client-preferences.json').read_text(encoding='utf-8'))
+            preferred = Path(saved.get('data_directory', ''))
+            if (preferred / 'catalog.json').is_file(): args.data = preferred
+        except (OSError, ValueError, TypeError): pass
+    if not (args.data / 'catalog.json').is_file():
+        if args.offline:
+            selector = tk.Tk(); selector.withdraw()
+            messagebox.showerror('Données locales', 'La première installation nécessite une connexion pour télécharger la base.', parent=selector)
+            selector.destroy()
+            return
+        from tools.first_run import run
+        chosen = run(args.state)
+        if not chosen: return
+        args.data = Path(chosen)
+    try:
+        app = Application(args.data, args.state, offline=args.offline, consultation_only=args.consultation)
+    except (OSError, ValueError, KeyError) as error:
+        messagebox.showerror('WoWCarto Forever', 'Chargement des données impossible : ' + str(error))
+        return
+    if not app.preferences.get('welcome_seen'):
+        app.root.after(400, app.show_welcome)
     app.root.mainloop()
 
 

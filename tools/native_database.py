@@ -58,7 +58,8 @@ def decode_categories(data):
             raise ValueError('Catégorie native dupliquée.')
         color = struct.unpack_from('<I', block, 24)[0]
         categories[key] = dict(id=key, name=_short(block, 0, 20), icon_index=block[22],
-                               native_class=block[23], color=color,
+                               native_class=block[23], map_icon_index=struct.unpack_from('<I', block, 28)[0], color=color,
+                               font_name=_short(block, 58, 20), font_size=block[79], font_style=block[57], zoom_tier=block[56],
                                color_rgb=f'#{color & 255:02x}{(color >> 8) & 255:02x}{(color >> 16) & 255:02x}',
                                raw_hex=block.hex())
     return categories
@@ -184,7 +185,7 @@ def load_database(path, *, expected_version=1200):
     return dict(format='wcf-native-database-readonly-v1', source=str(path), source_sha256=inventory['sha256'],
                 source_bytes=len(data), annotations=annotations, categories=decode_categories(sections[3]),
                 flags=flags, **topology, trailer=trailer,
-                icons_bmp=sections[7], region_icons_bmp=sections[6], flag_icons_bmp=sections[9],
+                language_icon_bmp=sections[0], icons_bmp=sections[7], region_icons_bmp=sections[6], flag_icons_bmp=sections[9],
                 generator_config=_text(sections[4]), generation_table=_text(sections[5]),
                 native_version=expected_version,
                 validation='Structural decode; not full native behavioral equivalence')

@@ -1,21 +1,22 @@
-# Distribution et licence
+# Code et ressources tierces
 
-Ce dépôt publie le code de travail de WoWCarto Forever et ses tests.
-Une licence de réutilisation générale du code n'a pas encore été choisie par le
-mainteneur. En attendant, aucune licence MIT, GPL ou autre n'est présumée.
-La consultation publique n'équivaut pas à une autorisation générale de
-redistribution ou de réutilisation.
+Le code original de ce dépôt est proposé sous GPL-3.0-only ; voir [LICENSE](LICENSE).
+Cette licence ne modifie pas les conditions applicables aux composants et ressources tiers.
 
-Les bibliothèques installées par les fichiers de dépendances conservent leurs
-licences respectives. Les cartes, bases historiques, icônes, textures, logos
-et exécutables de tiers ne sont pas couverts par le code du projet et ne sont
-pas fournis dans ce dépôt.
+- CascLib est distribué sous licence MIT : voir
+  [sa licence](assets/first-run/CascLib-LICENSE.txt) et son
+  [code source](https://github.com/ladislav-zezula/CascLib) (révision
+  `6b889ec8f421cbc9baccec296c582362ab917887`).
+- La liste de références de textures est issue du
+  [verified listfile de wowdev](https://github.com/wowdev/wow-listfile).
+- Les deux bandes d’icônes 1.20 sont issues de WoWCartographe. Les conditions
+  applicables à leur redistribution ne sont pas établies ; ce dépôt est privé
+  pendant la préparation.
+- Les bases historiques, leurs contributeurs et les éventuels contenus tiers
+  ont des conditions de réutilisation à déterminer. Elles sont téléchargées
+  séparément à l’installation et ne sont pas incluses dans ce dépôt.
+- Les cartes et textures du jeu sont produites à partir de l’installation locale
+  de l’utilisateur et ne sont pas incluses dans ce dépôt.
 
-Les fichiers `hosting/web/private/reference-*.bits` sont des masques de
-compatibilité d'identifiants utilisés pour refuser les corrections vers des
-identifiants absents. Ils ne contiennent ni les textes des annotations ni les
-identifiants de connexion du service.
-
-Une licence explicite et les autorisations nécessaires doivent être définies
-avant de présenter une redistribution contenant des ressources tierces comme
-une release publique complète.
+Le projet est indépendant et ne revendique aucune affiliation avec les titulaires
+des marques et contenus mentionnés.

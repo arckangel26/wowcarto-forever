@@ -86,6 +86,7 @@ class Model:
                     raise ValueError('La base source diffère de son empreinte enregistrée.')
                 self.loaded[key] = load_database(path, expected_version=self.map_set.get('native_version', 1200))
         self.db = self.loaded[key]
+        self.native_by_id = {row['id']: row for row in self.db['annotations']}
         if self.index:
             self.index.close()
             self.index = None
@@ -145,6 +146,13 @@ class Model:
             ref = row['source_ref']
             relevant = ref and (ref.startswith(self.native_prefix) or ref.startswith(self.personal_prefix) or ref in community_refs)
             if not row['deleted'] and relevant:
+                if ref.startswith(self.native_prefix):
+                    try: original = self.native_by_id.get(int(ref[len(self.native_prefix):]))
+                    except ValueError: original = None
+                    if original is not None:
+                        # Local edits replace editable fields while retaining the
+                        # immutable native geometry and source-only metadata.
+                        row = dict(original, **row)
                 record = self.projected(row, key='note:' + row['id'], source='personal', note_id=row['id'])
                 if record:
                     result.append(record)

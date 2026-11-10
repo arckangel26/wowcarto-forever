@@ -31,10 +31,11 @@ class SyncViewTests(unittest.TestCase):
 
     def test_local_edit_refresh_keeps_map_view(self):
         app=Application.__new__(Application)
-        app.model=Mock(); app.model.by_group={1:[{'category':7,'name':'Local'}]}
+        app.mode=Mock(); app.mode.get.return_value='Référence 1.20'
+        app.model=Mock(); app.model.by_group={1:[{'category':7,'name':'Local','key':'local'}]}
         app.group=1; app.tiles=[{'id':1}]; app.map=Mock()
         app.refresh_local_annotations()
-        app.map.set_scene.assert_called_once_with(app.tiles,[{'category':7,'name':'Local'}],fit=False)
+        app.map.set_scene.assert_called_once_with(app.tiles,[{'category':7,'name':'Local','key':'local'}],fit=False)
 
     def test_startup_restores_cached_community_and_reports_invalid_cache(self):
         model=Mock(); model.reference_corrections={}

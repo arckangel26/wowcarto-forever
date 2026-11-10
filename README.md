@@ -1,81 +1,83 @@
+<div align="center">
+
 ![WoWCarto Forever — cartographie communautaire](docs/assets/banner.svg)
 
 # WoWCarto Forever
 
-**Un cartographe Windows communautaire pour explorer WoW Forever et faire vivre ses annotations.**
+**La carte de votre aventure, à portée de clic.**
 
-[Présentation en anglais](README.en.md) · [État du logiciel](docs/STATUS.md) · [Installation et compilation](docs/BUILD.md) · [Contribuer](CONTRIBUTING.md)
+Un compagnon Windows inspiré de WoWCartographe 1.20 pour explorer les cartes de
+WoW Forever et consulter les informations réunies par la communauté.
 
-WoWCarto Forever est une nouvelle application inspirée de WoWCartographe 1.20.
-Elle reprend son organisation visuelle : carte centrale, minicarte, liste de
-zones géographiques, filtre, recherche et annotations. Son objectif est de
-permettre à la communauté de consulter, enrichir et corriger les informations
-cartographiques pour WoW Forever.
+[Découvrir](#découvrir) · [Premiers pas](#premiers-pas) · [État du projet](#état-du-projet) · [Contribuer](#contribuer)
 
-## Ce qui fonctionne
+`Windows 64 bits` &nbsp;·&nbsp; `FR / EN` &nbsp;·&nbsp; `Consultation hors ligne`
 
-- Carte continue avec déplacement, zoom, sélection des zones et contours.
-- Recherche dans les noms et commentaires, avec filtres et résultats paginés.
-- Bases historiques FR et EN, avec séparation des annotations personnelles.
-- Thème clair ou sombre et interface française ou anglaise.
-- Édition locale avec historique, import/export, masquage et restauration.
-- Réception communautaire HTTPS, cache local et contrôle des révisions.
-- Partage direct de nouvelles notes FR compatibles ; correction des annotations
-  communautaires et des noms historiques.
+</div>
 
-## Trois modes, un état clairement annoncé
+---
 
-| Mode | Contenu | État |
-| --- | --- | --- |
-| Référence 1.20 | Cartes et annotations historiques FR/EN | Consultation et édition locale disponibles avec des ressources préparées |
-| Modern | Textures locales de Forever 1.60.1.70755 et annotations historiques recalées | Raccords et positions à vérifier dans le jeu |
-| Legacy candidat | Base candidate 1.08b, plans statiques et fonds continentaux 1.20 | Lecture et recherche disponibles ; provenance mixte et une image absente |
+## Découvrir
 
-**Ce dépôt est une préversion en validation.** Il ne propose pas encore de
-version finale ni d'installateur public. Le dernier paquet Windows local a été
-essayé avec un profil isolé ; la suite locale a exécuté **232 tests avec succès**.
-Les résultats locaux ne garantissent pas les résultats de la CI ou de toutes
-les installations. Voir le [détail de validation](docs/STATUS.md).
+**Une carte à explorer.** Déplacez-vous librement, zoomez, choisissez une région
+et retrouvez les points d’intérêt sur une carte continue.
 
-## Installer ou développer
+**Des informations à portée de recherche.** Cherchez un nom ou un commentaire,
+filtrez les catégories et consultez les détails issus des bases historiques.
 
-Le dépôt contient le code du client, les outils de préparation, les tests et le
-service communautaire PHP/MySQL. **Les cartes, textures du jeu, exécutables
-historiques et bases `master.loc` ne sont pas distribués ici.** Le client a
-besoin d'un dossier de ressources préparé et vérifié.
+**Un esprit 1.20.** L’interface reprend l’organisation de WoWCartographe :
+carte centrale, régions, liste, recherche, informations et marqueurs de difficulté.
 
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m tools.clone_app --data "C:\chemin\vers\data"
-```
+**Vos cartes, sur votre ordinateur.** L’assistant lit votre installation locale
+de WoW Forever et génère les cartes en qualité SD ou HD. Une connexion sert à
+télécharger la base lors du premier démarrage ; la consultation reste ensuite
+possible hors ligne.
 
-Le dossier `data` doit contenir un `catalog.json` au format
-`wcf-clone-catalog-v1` et les fichiers qu'il référence. Le
-[guide technique](docs/BUILD.md) décrit la structure et les limites actuelles
-de préparation. Un simple clonage du dépôt ne fournit pas les ressources du jeu.
+## Premiers pas
 
-## Un projet fait pour évoluer avec sa communauté
+1. Installez le client Windows depuis une version mise à disposition dans les
+   [releases du projet](https://github.com/arckangel26/wowcarto-forever/releases).
+2. Au premier démarrage, sélectionnez le fichier `Wow.exe` de WoW Forever.
+3. Choisissez **SD** ou **HD**, puis laissez l’application générer les cartes.
+4. Choisissez la base **française** ou **anglaise**. Les informations sont
+   téléchargées et vérifiées avant l’ouverture.
+5. Explorez la carte en **consultation**.
 
-Les informations historiques peuvent être anciennes ou erronées. Les
-contributions servent à les améliorer progressivement ; leur présence n'est
-pas une garantie d'exactitude dans Forever. Une publication rend son contenu
-visible aux autres utilisateurs. N'envoyez pas d'informations personnelles.
+> **Disponibilité :** le paquet Windows existe localement et son parcours a été
+> essayé sur une installation isolée. Aucune release n’a encore été publiée sur
+> ce dépôt. L’installateur n’est pas signé.
 
-Le mode édition doit être activé et la base autorisée doit correspondre à la
-base consultée. Une correction concurrente périmée est refusée. Le nom d'une
-annotation historique peut être corrigé sans réécrire son fichier source.
-Le [guide de contribution](CONTRIBUTING.md) détaille ces parcours et les limites
-du format historique.
+## État du projet
 
-Pour signaler une position incorrecte ou un défaut visuel, ouvrez une issue en
-précisant le mode, la langue, la zone et les étapes de reproduction. Les idées,
-corrections de code et traductions sont également les bienvenues.
+Le projet est une **préversion en validation**. La génération SD, le téléchargement
+de la base française, l’ouverture, la consultation et le redémarrage hors ligne
+ont été vérifiés sur une installation Windows isolée avec WoW Forever
+1.60.1.70862. La base anglaise et la génération HD ont également été testées,
+mais pas toutes les combinaisons sur toutes les configurations.
 
-## Ressources et attribution
+Les bases FR et EN viennent de WoWCartographe 1.20. Leur contenu est historique :
+la présence et la position de chaque annotation dans Forever ne sont pas toutes
+vérifiées. Certaines informations peuvent donc avoir changé.
 
-Projet communautaire indépendant, sans affiliation officielle annoncée avec
-Blizzard Entertainment, les auteurs de WoWCartographe ou l'équipe WoW Forever.
-Les noms et ressources de tiers restent la propriété de leurs titulaires.
-La visibilité publique du code n'accorde aucune licence sur ces ressources.
-Consultez [NOTICE](NOTICE.md) pour le périmètre de distribution et de licence.
+Le parcours d’installation décrit ci-dessus ouvre l’application en consultation.
+Les fonctions d’édition et de contribution du code existant ne constituent pas
+une promesse de service communautaire public opérationnel.
+
+## Contribuer
+
+Un endroit incorrect, une recherche qui ne trouve pas ce qu’elle devrait, une idée
+pour rendre la carte plus claire ? Une issue détaillant la version, la langue,
+la zone et les étapes de reproduction aidera à avancer.
+
+Les contributions au code sont bienvenues. Le [guide de contribution](CONTRIBUTING.md)
+explique comment préparer une modification. Voir aussi le
+[guide Windows](docs/CLIENT_WINDOWS.md) et les [précisions sur les ressources](NOTICE.md).
+
+## Code et ressources
+
+Le code original du projet est proposé sous [GPL-3.0](LICENSE). Les licences et droits
+des dépendances et ressources tierces restent distincts ; consultez [NOTICE](NOTICE.md).
+Les cartes du jeu et les bases `master.loc` ne sont pas incluses dans le dépôt.
+
+WoWCarto Forever est un projet indépendant, sans affiliation officielle avec
+Blizzard Entertainment ou les auteurs de WoWCartographe.
