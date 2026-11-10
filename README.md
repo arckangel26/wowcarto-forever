@@ -42,8 +42,7 @@ possible hors ligne.
    téléchargées et vérifiées avant l’ouverture.
 5. Explorez la carte en **consultation**.
 
-L’installateur est non signé et la préversion est accessible aux personnes ayant
-accès à ce dépôt privé. Le parcours complet de cet installateur reste à vérifier.
+L’installateur est non signé. Le parcours complet de cet installateur reste à vérifier.
 
 
 

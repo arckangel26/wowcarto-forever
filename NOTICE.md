@@ -10,8 +10,7 @@ Cette licence ne modifie pas les conditions applicables aux composants et ressou
 - La liste de références de textures est issue du
   [verified listfile de wowdev](https://github.com/wowdev/wow-listfile).
 - Les deux bandes d’icônes 1.20 sont issues de WoWCartographe. Les conditions
-  applicables à leur redistribution ne sont pas établies ; ce dépôt est privé
-  pendant la préparation.
+  applicables à leur redistribution ne sont pas établies.
 - Les bases historiques, leurs contributeurs et les éventuels contenus tiers
   ont des conditions de réutilisation à déterminer. Elles sont téléchargées
   séparément à l’installation et ne sont pas incluses dans ce dépôt.
