@@ -12,3 +12,10 @@ for Forever. The project is a preview; no installer release is published here ye
 
 Original project code is licensed under [GPL-3.0-only](LICENSE). Third-party
 resources and their conditions are documented in [NOTICE](NOTICE.md).
+
+## Acknowledgements
+
+Thank you to **Tixu**, creator of WoWCartographe, and to all the original
+community members who shared their discoveries and enriched its maps. Visit
+[Tixu’s historical website](http://tixu.scribe.free.fr/). The
+[editing guide](docs/EDITION.md) explains current availability and limitations.

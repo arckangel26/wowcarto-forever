@@ -9,7 +9,7 @@
 Un compagnon Windows inspiré de WoWCartographe 1.20 pour explorer les cartes de
 WoW Forever et consulter les informations réunies par la communauté.
 
-[Découvrir](#découvrir) · [Premiers pas](#premiers-pas) · [État du projet](#état-du-projet) · [Contribuer](#contribuer)
+[Découvrir](#découvrir) · [Premiers pas](#premiers-pas) · [Éditer la carte](docs/EDITION.md) · [Remerciements](#remerciements) · [Contribuer](#contribuer)
 
 `Windows 64 bits` &nbsp;·&nbsp; `FR / EN` &nbsp;·&nbsp; `Consultation hors ligne`
 
@@ -62,6 +62,23 @@ vérifiées. Certaines informations peuvent donc avoir changé.
 Le parcours d’installation décrit ci-dessus ouvre l’application en consultation.
 Les fonctions d’édition et de contribution du code existant ne constituent pas
 une promesse de service communautaire public opérationnel.
+
+## Éditer la carte
+
+Vous souhaitez ajouter une annotation ou corriger une information ? Le
+[guide d’édition](docs/EDITION.md) présente les étapes et les limites actuelles.
+L’installation préparée est en consultation seule : l’édition et le partage
+n’y sont pas disponibles. En attendant, vous pouvez signaler une erreur dans une issue.
+
+## Remerciements
+
+Un grand merci à **Tixu**, créateur de WoWCartographe, pour son travail et pour
+l’outil qui a inspiré ce projet. Son [site historique](http://tixu.scribe.free.fr/)
+reste une référence précieuse de cette aventure.
+
+Merci également à toutes les joueuses et à tous les joueurs de la communauté
+originale qui ont partagé leurs découvertes et enrichi les cartes au fil des
+années. WoWCarto Forever s’appuie sur ce patrimoine collectif.
 
 ## Contribuer
 
